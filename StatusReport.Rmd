@@ -44,6 +44,7 @@ curve <- readxl::read_excel(here::here("Data/SwapPricing/Curve.xlsx")) |>
 Some R technical notes:
 
 - I use the latest version of R (4.1.0) which has recently introduced a native
+- OK I've updated my desktop version to R-4.1.0 and updated RStudio too. 
 pipe operator (you can read more about it  [here](https://towardsdatascience.com/the-new-native-pipe-operator-in-r-cbc5fa8a37bd)). Let me know if you can't manage to update it
 
 - I always use the notation *package::function* because a) typically it is the 
