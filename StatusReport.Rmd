@@ -1,0 +1,128 @@
+---
+title: "DTCC Analysis"
+author: "Davide Magno"
+output:
+  html_document:
+    df_print: paged
+---
+
+### Reconciliation of the SwapPricer vs Bloomberg
+
+First step is to make sure that the SwapPricer package is able to price the 
+contracts we want to focus on (ie. USD fixed-float swaps).
+
+I have loaded in the *Data* folder a set of documents I was able to download 
+from Bloomberg. 
+
+Let's setup the run:
+
+1) First of all download SwapPricer from Github
+```{r Download SwapPricer, warning=FALSE}
+# Remove the comment once installed
+# remotes::install_github("DavideMagno/SwapPricer")
+```
+
+2) We define a custom swap portfolio. The notional is equal to the average notional 
+traded on the DTCC report and 10 years of duration. We test both at par and not 
+at par swaps. 
+```{r Define the portfolio}
+portfolio <- tibble::tribble(
+  ~ID, ~currency, ~notional, ~start.date, ~maturity.date, ~strike, ~type, ~standard,
+  "ATM", "USD", 80000000, "18-06-2021", "18-06-2031", 0.01396766, "receiver", TRUE,
+  "OTM", "USD", 80000000, "18-06-2021", "18-06-2031", 0.01000000, "receiver", TRUE
+)
+```
+
+3) We load the swap curve as in the file "Curve.xlsx" in the SwapPricing folder
+```{r Read the discount factors from the file}
+curve <- readxl::read_excel(here::here("Data/SwapPricing/Curve.xlsx")) |> 
+  dplyr::select(Date = `Maturity Date`, df = Discount) |> 
+  dplyr::mutate(Date = as.Date(Date, "%m/%d/%Y")) |> 
+  tibble::add_row(Date = as.Date("2021-06-18"), df = 1, .before = 1)
+```
+
+Some R technical notes:
+
+- I use the latest version of R (4.1.0) which has recently introduced a native
+- OK I've updated my desktop version to R-4.1.0 and updated RStudio too. 
+pipe operator (you can read more about it  [here](https://towardsdatascience.com/the-new-native-pipe-operator-in-r-cbc5fa8a37bd)). Let me know if you can't manage to update it
+
+- I always use the notation *package::function* because a) typically it is the 
+most common way of coding for packages and b) it removes any ambiguity on whether
+a function is native R or belongs to a package. A bit more verbose but it goes well with
+the piping
+
+- I use the **here** package because it allows not to reset any directory when two (or more) people work on the same file on two (or more) different computers
+
+4) We setup the curve as required by the SwapPricer package
+```{r Create curve list}
+usd.curve <- list()
+usd.curve$currency <- "USD"
+usd.curve$discount <- curve
+```
+
+5) We can now price the two swaps:
+```{r Price the swaps, warning=FALSE}
+pricing.day <- as.Date("2021-06-18")
+SwapPricer::SwapPortfolioPricing(portfolio, pricing.day, usd.curve)
+```
+
+We compare the pricing with the screenshots from Bloomberg, starting from the ATM one: 
+
+![](`r here::here("Data/SwapPricing/ATM.PNG")`)
+
+The difference in pricing is pretty close: $27k of difference in MTM which is almost 0.35 times the pv01.
+Difference in pv01 is $900
+
+Let's see the ITM swap
+
+![](`r here::here("Data/SwapPricing/ITM.PNG")`)
+
+Difference in pricing has increased to $60k, which is still less than 1 pv01 (0.79)
+
+**Pricing is therefore in line with Bloomberg and we can use it for estimates**
+
+### Data wrangling the DTCC Report
+
+Let's start the analysis by loading the file
+
+```{r Load the file, warning=FALSE, message=FALSE}
+date <- "2021_06_18"
+
+# I use the readr package to read csvs because it doesn't assume that strings are factors by default
+
+IRTrade <- readr::read_csv(here::here(paste0("Data/DTCC",date,".csv")))
+```
+
+As agreed, let's start focusing only on: 
+
+- newly traded 
+- ATM 
+- Fixed-Float interest rate swaps
+- cleared  
+- in USD
+
+```{r Filter data}
+test <- IRTrade |> 
+  dplyr::filter(`Product ID` == "InterestRate:IRSwap:FixedFloat",
+                Action == "NEW",
+                `Transaction Type` == "Trade",
+                `Notional Currency 1` == "USD",
+                `Payment Frequency Period 1` %in% c("3M", "6M"),
+                `Execution Venue Type` %in% c("ON","OFF"),
+                Cleared == "C",
+                `Block Trade Election Indicator` == "N",
+                `Other Payment Amount` == "")
+```
+
+Let's analyse the **Event Timestamp** field of the file:
+
+```{r Check for timestamps}
+test |> 
+  dplyr::pull(`Event Timestamp`) |> 
+  as.Date() |> 
+  table()
+```
+
+We can notice that not all the swaps have been traded on the day of the report. 
+This is not a big issue, we can hence relax the filter, but it is something that we should keep in mind for pricing, especially on days with big swings on the market. 
