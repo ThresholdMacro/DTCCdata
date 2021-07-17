@@ -110,15 +110,18 @@ As agreed, let's start focusing only on:
 
 ```{r Filter data}
 swaps <- IRTrade |> 
+  dplyr::mutate(`Notional Amount 1` = stringr::str_remove_all(`Notional Amount 1`, "\\,") |> 
+                    stringr::str_remove("\\+") |> 
+                    as.numeric()) |> 
   dplyr::filter(`Product ID` == "InterestRate:IRSwap:FixedFloat",
                 Action == "NEW",
                 `Transaction Type` == "Trade",
                 `Notional Currency 1` == "USD",
                 `Payment Frequency Period 1` %in% c("3M", "6M"),
+                `Payment Frequency Period 2` %in% c("3M", "6M"),
                 Cleared == "C",
                 `Block Trade Election Indicator` == "N",
                 is.na(`Other Payment Amount`),
-                !stringr::str_detect(IRTrade$`Notional Amount 1`, "\\+"),
                 grepl("N",`Non-Standardized Pricing Indicator`))
 ```
 
@@ -127,17 +130,17 @@ We now have to put the swaps information in the right format for the SwapPricer:
 ```{r Wrange the DTCC data for the SwapPricer}
 swap.DTCC.portfolio <- swaps |> 
   dplyr::summarise(ID = `Dissemination ID`,
-                currency = `Notional Currency 1`,
-                notional = `Notional Amount 1` |> 
-                  stringr::str_replace_all(",","") |> 
-                  as.numeric(),
-                start.date = as.character(`Effective Date`, format = "%d/%m/%Y"),
-                maturity.date = as.character(`Expiration Date`, format = "%d/%m/%Y"),
-                strike = dplyr::if_else(
-                  is.na(`Fixed Rate 1`),`Fixed Rate 2`, `Fixed Rate 1`),
-                type = dplyr::if_else(
-                  is.na(`Fixed Rate 1`), "payer", "receiver"),
-                standard = TRUE) 
+                   currency = `Notional Currency 1`,
+                   notional = `Notional Amount 1` |> 
+                     stringr::str_replace_all(",","") |> 
+                     as.numeric(),
+                   start.date = as.character(`Effective Date`, format = "%d/%m/%Y"),
+                   maturity.date = as.character(`Expiration Date`, format = "%d/%m/%Y"),
+                   strike = dplyr::if_else(
+                     is.na(`Fixed Rate 1`),`Fixed Rate 2`, `Fixed Rate 1`),
+                   type = dplyr::if_else(
+                     is.na(`Fixed Rate 1`), "payer", "receiver"),
+                   standard = TRUE) 
 ```
 
 and price them using the swap pricer.
@@ -197,8 +200,8 @@ strike.table <- swap.DTCC.portfolio |>
   dplyr::mutate(time.to.mat = (lubridate::dmy(maturity.date) - lubridate::dmy(start.date))/365) |> 
   dplyr::mutate(time.to.mat = as.numeric(time.to.mat)) |> 
   dplyr::filter(time.to.mat >= 4.0) |> 
-  dplyr::select(ID, time.to.mat, strike)
-    
+  dplyr::select(ID, start.date, time.to.mat, strike)
+
 par.rates <- readxl::read_excel(here::here("Data/SwapPricing/Curve.xlsx")) |> 
   dplyr::filter(Source %in% "DETAILED_SWAP") |> 
   dplyr::select(Date = `Maturity Date`, rate = `Market Rate`) |> 
@@ -210,20 +213,20 @@ par.rates <- readxl::read_excel(here::here("Data/SwapPricing/Curve.xlsx")) |>
 library(ggplot2)
 
 strike.table |> 
-ggplot(aes(x = time.to.mat, y = strike)) + 
+  ggplot(aes(x = time.to.mat, y = strike)) + 
   geom_point(alpha = 0.2)  + 
   geom_point(data = par.rates, aes(x = time.to.mat, y = rate), 
              colour = "red", size = 2) + 
   theme_bw() + 
   labs(x = "Time to maturity", y = "Rate") + 
   scale_y_continuous(labels = scales::percent)
-  
+
 ```
 
 We can notice that:
 - there is a significantly wide range of strikes traded especially on the 5, 10 and 30 years maturity. Are these out of the money trades or do intra-day movements justify these deviations? Let's analyse the dynamic of the intraday rate from Bloomberg:
 ![](`r here::here("Data/SwapPricing/Intraday Rates.PNG")`)
-We can notice that the day has been particularly volatile with an average of 12bps of decrease from the intraday. This justifies the fact that the red dots are at the lower bottom of the range. Let's repeat the analysis removing all the trades that are at max 12 bps above the swap rate used for pricing:
+The intra-day rates have been particularly volatile with an average of 12bps of decrease from the intraday. This justifies the fact that the red dots are at the lower bottom of the range. Let's repeat the analysis removing all the trades that are at max 12 bps above the swap rate used for pricing:
 
 ```{r Non-ATM swaps, echo = FALSE}
 par.rates <- par.rates |> 
@@ -239,7 +242,7 @@ From the analysis, the number of trades that have been struck outside the range 
 
 Let's analyse the pricing to see where most of the differences come from:
 
-```{r}
+```{r Impact of non-ATM strikes}
 non.atm.ids <- strike.table |> 
   dplyr::select(ID) |> 
   dplyr::mutate(ID = as.character(ID),
@@ -255,5 +258,62 @@ priced.DTCC.portfolio |>
 
 ```
 
-As expected, most of the deviation comes from the swaps that are outside of the 12bps intra-day range we have identified. Still, the deviation in terms of pv01 is not in the space of 1 (or lower, if possible) which means that intraday data does matter when we look at the DTCC data and we price it.  
+As expected, most of the deviation comes from the swaps that are outside of the 12bps intra-day range we have identified. Still, the deviation in terms of pv01 is not in the space of 1 (or lower, if possible) which means that intraday data does matter when we look at the DTCC data and we price it.
+
+Why have there been so many trades with strikes far from the ATM market quotes? Analyzing these trade we can say that a lot depends on the start date of the swaps. Considering the convention of "D+2" a spot starting swap traded on the 18th would have an effective date of the 22nd. We see if there are swaps that are not spot starting.
+
+```{r Analysis of non-ATM strikes}
+strike.table <- strike.table |> 
+  dplyr::mutate(start.date = lubridate::dmy(start.date)) |> 
+  dplyr::mutate(type = dplyr::case_when(
+    start.date > as.Date("2021-06-22") ~ "Forward starting",
+    start.date < as.Date("2021-06-22") ~ "Initiated before the 22nd of June",
+    TRUE ~ "Spot starting"
+  )) 
+
+strike.table |> 
+  dplyr::count(type)
+```
+
+We can hence conclude that the vast majority of swaps that have a par rate not in line with the intraday movements of the spot swap rates are forward starting. 
+
+## Average Duration Traded
+
+Let's for now limit the analysis to spot starting swaps and calculate the duration for each of the swaps:
+
+```{r Calculation of swap duration, warning=FALSE}
+strike.table <- strike.table |> 
+  dplyr::filter(type %notin% "Spot starting")
+
+duration.table <- swap.DTCC.portfolio |> 
+  dplyr::filter(ID %notin% strike.table$ID) |> 
+  SwapPricer::SwapPortfolioPricing(pricing.day, usd.curve, LiborRate, duration.flag = TRUE) |> 
+  dplyr::select(swap.id, notional, clean.mv, duration)
+```
+
+From a coding perspective we just note that the formula is the same used above but we included a **duration.flag = TRUE** to indicate that we want to calculate duration as well. 
+
+We are finally in a position of calculating a notional weighted average duration traded:
+
+```{r Average duration traded}
+duration.table |> 
+  with(sum(notional * duration)/sum(notional))
+```
+
+Another interesting analysis is to see whether there is difference in duration traded between payer and receiver swaps:
+
+```{r Duration Traded By side, paged.print=TRUE}
+ids.side <- swap.DTCC.portfolio |> 
+  dplyr::select(swap.id = ID, type) |> 
+  dplyr::mutate(swap.id = as.character(swap.id))
+
+duration.table |> 
+  dplyr::left_join(ids.side, by = "swap.id") |> 
+  dplyr::group_by(type) |> 
+  dplyr::summarise(`Total Notional` = sum(notional),
+                   `Average Duration` = sum(notional * duration)/sum(notional))
+```
+
+We notice no significant differences between the two sides of the trade (less than 1 year) but the vast majority of the notional is on one direction.
+
 

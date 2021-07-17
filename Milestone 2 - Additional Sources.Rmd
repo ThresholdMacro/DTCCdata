@@ -1,0 +1,96 @@
+---
+title: "Extending to new sources of information"
+author: "Davide Magno"
+date: "7/14/2021"
+output:
+  html_document:
+    df_print: paged
+---
+
+## Analysis of realtime data from SEB vs Bloomberg
+
+We have seen that taking into account realtime data is extremely important for pricing: the deviation of Market Values from 0 is in fact in the spae of 3/4 PV01s even for spot starting swaps.
+
+We hence downloaded the intraday USD swap rate from Bloomberg for the maturities of 10, 20 and 30 years during the week between the 5th and the 9th of July. These are saved in an excel file in the Intraday Pricing folder.
+
+```{r Wrangle BBG Intraday Data, message=FALSE, warning=FALSE}
+intraday.rates <- readxl::read_excel(here::here("Data/Intraday Pricing/IntradaySwaps.xlsx"), skip = 3)
+
+TableIntradayData <- function(columns, maturity, data) {
+  data |> 
+    dplyr::select(columns) |> 
+    na.omit() |> 
+    dplyr::rename_all(~c("Date", "Value")) |> 
+    dplyr::mutate(Maturity = maturity, 
+                  Source = "Bloomberg") |> 
+    dplyr::select(Maturity, Value, Date, Source)
+}
+
+intraday.bbg <- purrr::map2_dfr(list(1:2, 4:5, 7:8), c(10, 20, 30), TableIntradayData, data = intraday.rates)
+
+intraday.bbg
+```
+
+We scrape the SEB rates on minute by minute basis and save them on a database. 
+
+```{r Extract SEB Data from DB, paged.print=TRUE}
+ConnectToDB <- function(){
+  db_user <- 'Rstudio'
+  db_password <- 'Karelias123$'
+  db_name <- 'swap_rates'
+  db_host <- '167.71.3.141'
+  db_port <- 3306
+  
+  mydb <-  RMySQL::dbConnect(RMySQL::MySQL(), user = db_user,
+                             password = db_password, dbname = db_name,
+                             host = db_host, port = db_port)
+}
+
+con <- ConnectToDB()
+intraday.seb <- con |>
+  DBI::dbReadTable("usd_swap_rates") |> 
+  dplyr::rename(Value = Price) |>
+  dplyr::filter(Date >= as.Date("2021-07-05"),
+                Date <= as.Date("2021-07-09"),
+                Maturity %in% c(10, 20, 30)) |>
+  dplyr::mutate(Date = as.POSIXct(paste(lubridate::ymd(Date), Time)),
+                Source = "SEB",
+                Date = Date + lubridate::hours(4)) |> # UTC is 4 hours ahead of EST in summer
+  dplyr::select(-Time)
+DBI::dbDisconnect(con)
+
+intraday.seb
+
+```
+
+We collate the data into one dataframe.
+
+```{r}
+intraday <- intraday.seb |> 
+  dplyr::bind_rows(intraday.bbg)
+
+```
+
+We plot the data by maturity and distinguishing between SEB and Bloomberg
+
+```{r message=FALSE, warning=FALSE}
+library(ggplot2)
+intraday |> 
+  ggplot(aes(x = Date, y = Value, colour = Source)) + 
+  geom_line() +
+  facet_grid(rows = vars(Maturity), scales = "free_y")
+```
+
+We can notice that the intraday SEB data fits pretty well the Bloomberg one but the SEB website publishes data on European trading time. This means that it misses the market movements after ~5pm UTC.
+
+## Dowloading Data
+
+We use the **dataonderivatives** package to source automatically the information from the various sources. Please note that we don't use the original package available on CRAN. I forked the repository on Github and modified it to account for the new link where DTCC reports can be retrieved from.
+
+This is why there is the command remotes::install_github("DavideMagno/dataonderivatives") in the next chunck
+
+```{r message=FALSE, warning=FALSE}
+# remotes::install_github("DavideMagno/dataonderivatives")
+dataonderivatives::ddr(lubridate::ymd(20210707), "IR")
+```
+
