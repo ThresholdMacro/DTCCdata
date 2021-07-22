@@ -1,15 +1,83 @@
 ---
-title: "Extending to new sources of information"
+title: "Extending the duration analysis to any date and any source"
 author: "Davide Magno"
-date: "7/14/2021"
+date: "7/22/2021"
 output:
   html_document:
     df_print: paged
 ---
 
-## Analysis of realtime data from SEB vs Bloomberg
+We want to repeat the analysis performed in the *StatusReport.html* file at any given date. To do this we need to solve two problems:
 
-We have seen that taking into account realtime data is extremely important for pricing: the deviation of Market Values from 0 is in fact in the spae of 3/4 PV01s even for spot starting swaps.
+1. Find an easy and robust way to download the DTCC data and, potentially, adding new sources of information.
+
+2. Find a source of information for interest rate curve data that addresses the issue of intraday movements that we analysed in the previous report
+
+## Dowloading Data
+
+We use the **dataonderivatives** package to source automatically the information from the various sources. Please note that we can't use the original package available on CRAN. I hence forked the repository on Github and modified it to account for the new link where DTCC reports can be retrieved from. This is why there is the command remotes::install_github("DavideMagno/dataonderivatives") in the next chunck of code.
+
+The data that is downloaded with this package needs to be formatted to be used. That's why I created two functions in the *DataIngestion.R* file:
+
+- **DownloadFromDTCC**: download the DTCC report at given dates (even more than one at the same time) and fix dates and notional formatting
+
+- **DownloadFromCME**: download the DTCC report at given dates (even more than one at the same time) and fix dates, time to maturity formatting and saves the floating rate type
+
+Let's see how to use these functions, with a date different from the 18th of June.
+
+```{r Downloading DTCC data, message=FALSE, warning=FALSE}
+# remotes::install_github("DavideMagno/dataonderivatives")
+source(here::here("R/DataIngestion.R"))
+dates <- as.Date("2021-06-16")
+data <- DownloadFromDTCC(dates) 
+
+data
+```
+The same can be done for the CME source and this time we download multiple days of data.
+
+```{r Downloading CME data, message=FALSE, warning=FALSE}
+dates <- as.Date("2021-06-07") + lubridate::days(0:4)
+
+data.cme <- DownloadFromCME(dates) 
+
+data.cme
+```
+We can notice that the CME data has much less information than the DTCC.
+
+This data needs to be filtered for USD spot starting fixed-floating interest rate swaps with a maturity above 1 year, which is the core of our analysis. It also needs to be formatted in a way that is readable for the **SwapPricer** package. This is performed by the following two functions:
+
+- **SwapsFromDTCC**: it takes a vector of dates in input and it downloads, wrangles, filter and put the DTCC data in the right format for the SwapPricer
+
+- **SwapsFromCME**: it takes a vector of dates in input and it downloads, wrangles, filter and put the CME data in the right format for the SwapPricer
+
+Let's see how to use them:
+
+```{r Swaps from DTCC, message=FALSE, warning=FALSE}
+swaps.dtcc <- SwapsFromDTCC(dates)
+
+swaps.dtcc
+```
+We do the same with the CME data:
+
+```{r Swaps from CME, message=FALSE, warning=FALSE}
+swaps.cme <- SwapsFromCME(dates)
+
+swaps.cme
+```
+
+The output is empty because there are no swaps with the specific characteristics we have chosen.
+
+## Source of Pricing Data
+
+We have seen in the *StatusReport.html* file that taking into account realtime data is extremely important for pricing: the deviation of Market Values from 0 is in fact in the spae of 3/4 PV01s even for spot starting swaps.
+
+We have therefore followed two different routes:
+
+1. Scraping Realtime Data from the SEB website
+
+2. Using the very same downloaded data from DTCC or CME as source of par rates
+
+# Using SEB data
 
 We hence downloaded the intraday USD swap rate from Bloomberg for the maturities of 10, 20 and 30 years during the week between the 5th and the 9th of July. These are saved in an excel file in the Intraday Pricing folder.
 
@@ -83,14 +151,72 @@ intraday |>
 
 We can notice that the intraday SEB data fits pretty well the Bloomberg one but the SEB website publishes data on European trading time. This means that it misses the market movements after ~5pm UTC.
 
-## Dowloading Data
 
-We use the **dataonderivatives** package to source automatically the information from the various sources. Please note that we don't use the original package available on CRAN. I forked the repository on Github and modified it to account for the new link where DTCC reports can be retrieved from.
+# Using the data repository information
 
-This is why there is the command remotes::install_github("DavideMagno/dataonderivatives") in the next chunck
+We reuse the information downloaded from DTCC using the *SwapsFromDTCC* function to extract a par swap curve that can be used for pricing. The idea behind its construction is that since these are from actual quotes, we should have some swaps with valuation below 0, others above 0 but the whole set of swaps in general will be close to par. We will use two methodologies to summarise the information by bucket: the mean of the strikes and the median of the strikes.
+
+```{r, Extracting the Par Swap Curve}
+swaps.dtcc <- swaps.dtcc |> 
+  dplyr::mutate(start.date = as.Date(start.date, format = "%d/%m/%Y"),
+                maturity.date = as.Date(maturity.date, format = "%d/%m/%Y"),
+                time.to.mat = round((maturity.date - start.date)/365,0) |> 
+                  as.numeric(),
+                Bucket = cut(
+                  as.numeric(time.to.mat),
+                  breaks = c(seq(from = 0.5,to = 12.5, by = 1), 
+                             seq(from = 17.5,to = 52.5, by = 5)),
+                  labels = c(1:12, seq(from = 15, to = 50, by = 5)),
+                  right = FALSE),
+                Bucket = as.character(Bucket) |> as.numeric()) 
+
+swap.curve <- swaps.dtcc |> 
+  dplyr::group_by(Bucket) |> 
+  dplyr::summarise(Strike.median = median(strike),
+                   Strike.mean = mean(strike)) 
+
+swap.curve
+```
+We now plot the curve derived over the information from DTCC:
 
 ```{r message=FALSE, warning=FALSE}
-# remotes::install_github("DavideMagno/dataonderivatives")
-dataonderivatives::ddr(lubridate::ymd(20210707), "IR")
+swap.curve <- swap.curve |> 
+  tidyr::pivot_longer(-Bucket, names_to = "type", values_to = "Strike") 
+
+swaps.dtcc |> 
+  ggplot(aes(x = time.to.mat, y = strike)) + 
+  geom_point(alpha = 0.2)  + 
+  geom_point(data = swap.curve, aes(x = Bucket, y = Strike, colour = type), 
+             size = 2) + 
+  theme_bw() + 
+  labs(x = "Time to maturity", y = "Rate") + 
+  scale_y_continuous(labels = scales::percent)
 ```
 
+We notice an outlier in the DTCC data: a swap with a strike of 20%! The use of the median to derive the swap curve facilitates to manage issues like this, but to have a clearer picture we can try to isolate and remove this data. (We need to further analyse this to see if there are additional criteria we need to filter out for clean at par fixed-to-float swaps)
+
+```{r}
+id.outlier <- swaps.dtcc |> 
+  dplyr::filter(strike > 0.05) |> 
+  dplyr::pull(ID)
+
+`%notin%` <- Negate(`%in%`)
+
+swaps.dtcc <- swaps.dtcc |> 
+  dplyr::filter(ID %notin% id.outlier)
+
+swaps.dtcc |> 
+  ggplot(aes(x = time.to.mat, y = strike)) + 
+  geom_point(alpha = 0.2)  + 
+  geom_point(data = swap.curve, aes(x = Bucket, y = Strike, colour = type), 
+             size = 2) + 
+  theme_bw() + 
+  labs(x = "Time to maturity", y = "Rate") + 
+  scale_y_continuous(labels = scales::percent)
+```
+
+Removing the outlier it is quite clear how much the "mean" curve was impacted by it. Using the median allows us to avoid the wrangling of these extreme cases before we start the pricing routine and have a robust pricing curve. 
+
+We now have a swap par curve that we can use for pricing. 
+
+In order to test this, we need to bootstrap the curve we have just generated. TBC 
