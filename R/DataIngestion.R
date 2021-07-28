@@ -1,8 +1,7 @@
 CalculateEffectiveDate <- function(date) {
-  (date + lubridate::days(1)) |> 
-    fmdates::adjust(bdc = "mf", calendar = fmdates::USNYCalendar()) |> 
-    {\(adjusted.date) adjusted.date + lubridate::days(1)}() |> 
-    fmdates::adjust(bdc = "mf", calendar = fmdates::USNYCalendar())
+  (date + 1) |> 
+    {\(adjusted.date) RQuantLib::adjust(dates = adjusted.date, calendar = "UnitedStates")}() |> 
+    {\(adjusted.date) RQuantLib::adjust(dates = adjusted.date + 1, calendar = "UnitedStates")}()
 }
 
 DownloadFromDTCC <- function(dates) {
@@ -19,7 +18,7 @@ DownloadFromDTCC <- function(dates) {
                     stringr::str_remove("\\+") |> 
                     as.numeric(),
                   `Spot Effective Date` = CalculateEffectiveDate(`Event Timestamp`),
-                  )
+    )
 }
 
 DownloadFromCME <- function(dates) {

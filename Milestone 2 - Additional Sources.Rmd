@@ -13,7 +13,7 @@ We want to repeat the analysis performed in the *StatusReport.html* file at any 
 
 2. Find a source of information for interest rate curve data that addresses the issue of intraday movements that we analysed in the previous report
 
-## Dowloading Data
+# Dowloading Data
 
 We use the **dataonderivatives** package to source automatically the information from the various sources. Please note that we can't use the original package available on CRAN. I hence forked the repository on Github and modified it to account for the new link where DTCC reports can be retrieved from. This is why there is the command remotes::install_github("DavideMagno/dataonderivatives") in the next chunck of code.
 
@@ -67,7 +67,82 @@ swaps.cme
 
 The output is empty because there are no swaps with the specific characteristics we have chosen.
 
-## Source of Pricing Data
+# Application: Comparison with ISDA Data
+
+A practical application of the functions described in the previous section is the comparison between the raw data provided by DTCC and the one provided by ISDA at the following website: [http://swapsinfo.org/derivatives-transaction-data/](http://swapsinfo.org/derivatives-transaction-data/). When calling the *DownloadFromDTCC* we are passing a vector of dates. The function will then source and collate all the reports on its own. We limit the analysis to USD fixed-to-float interest rate swaps. We calculate then the total notional and number of trades exchanged in one day.
+
+```{r Downloading a full month of data from DTCC, message=FALSE, warning=FALSE}
+
+data.from.dtcc <- (as.Date("2021-05-31") + lubridate::days(0:30)) |> 
+  DownloadFromDTCC() |> 
+  dplyr::filter(grepl("InterestRate:IRSwap:FixedFloat", `Product ID`),
+                `Notional Currency 1` %in% "USD",
+                !is.na(`Notional Currency 1`),
+                Action == "NEW",
+                `Transaction Type` == "Trade",
+                `Event Timestamp` >= as.Date("2021-06-01"),
+                `Event Timestamp` <= as.Date("2021-06-30")) |> 
+  dplyr::group_by(`Event Timestamp`) |> 
+  dplyr::summarise(`Traded Notional` = sum(`Notional Amount 1`),
+                   `Trade Count` = dplyr::n()) |> 
+  dplyr::rename("Date" = `Event Timestamp`) |> 
+  dplyr::mutate(Source = "DTCC")
+
+data.from.dtcc
+
+```
+
+We download a report with the daily data reported on the ISDA webpage and wrangle to put in the same format as the DTCC one.
+
+![](`r here::here("Data/ISDA Analysis/ISDA Screenshot.png")`)
+
+```{r Import ISDA data, message=FALSE, warning=FALSE}
+data.from.isda <- readr::read_csv(here::here("Data/ISDA Analysis/IRD Transaction Data.csv")) |> 
+  dplyr::select(-`PRODUCT NAME`) |> 
+  dplyr::mutate(DATE = as.Date(DATE),
+                Source = "ISDA") 
+
+colnames(data.from.isda) <- stringr::str_to_title(colnames(data.from.isda))
+
+data.from.isda
+```
+
+We plot the comparison of the two sources as grouped bars.
+
+```{r Graph of the results, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(patchwork)
+
+p1 <- data.from.dtcc |> 
+  dplyr::bind_rows(data.from.isda) |> 
+  ggplot(aes(x = Date, y = `Traded Notional`, fill = Source)) + 
+    geom_bar(stat="identity", position = "dodge")
+
+p2 <- data.from.dtcc |> 
+  dplyr::bind_rows(data.from.isda) |> 
+  ggplot(aes(x = Date, y = `Trade Count`, fill = Source)) + 
+    geom_bar(stat="identity", position = "dodge")
+
+combined.graph <- p1 / p2
+combined.graph + patchwork::plot_annotation(
+  title = "Comparison of DTCC and ISDA data",
+  subtitle = "Data for the month of June 2021"
+)
+```
+
+We can notice that from a total traded notional perspective, the DTCC and ISDA data are almost perfectly aligned. 
+The number of trades show a bit more deviation with the number of trades on DTCC being typically higher than the one reported by ISDA. It is possible then that the latter filters the raw data even further. 
+
+As we have seen, other trade repositories (like CME) that could be publishing data. In particular, in this link  the CFTC publishes the status for all the data repositories that have applied to act as such [https://sirt.cftc.gov/sirt/sirt.aspx?Topic=DataRepositories](https://sirt.cftc.gov/sirt/sirt.aspx?Topic=DataRepositories). From the link, the only trade repositories that are currently working are DTCC and CME. The others:
+
+ - ICE only operates on commodities and credit
+ 
+ - Bloomberg SDR has withdrawn in 2019. This used to be a source for the ISDA website you showed me, which is therefore left only with DTCC
+
+From this quantitative and qualitative analysis, we can hence conclude that DTCC is an extremely well representative data source for the derivatives 
+
+
+# Source of Pricing Data
 
 We have seen in the *StatusReport.html* file that taking into account realtime data is extremely important for pricing: the deviation of Market Values from 0 is in fact in the spae of 3/4 PV01s even for spot starting swaps.
 
@@ -77,7 +152,7 @@ We have therefore followed two different routes:
 
 2. Using the very same downloaded data from DTCC or CME as source of par rates
 
-# Using SEB data
+## Using SEB data
 
 We hence downloaded the intraday USD swap rate from Bloomberg for the maturities of 10, 20 and 30 years during the week between the 5th and the 9th of July. These are saved in an excel file in the Intraday Pricing folder.
 
@@ -152,7 +227,7 @@ intraday |>
 We can notice that the intraday SEB data fits pretty well the Bloomberg one but the SEB website publishes data on European trading time. This means that it misses the market movements after ~5pm UTC.
 
 
-# Using the data repository information
+## Using the data repository information
 
 We reuse the information downloaded from DTCC using the *SwapsFromDTCC* function to extract a par swap curve that can be used for pricing. The idea behind its construction is that since these are from actual quotes, we should have some swaps with valuation below 0, others above 0 but the whole set of swaps in general will be close to par. We will use two methodologies to summarise the information by bucket: the mean of the strikes and the median of the strikes.
 
