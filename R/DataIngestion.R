@@ -78,8 +78,10 @@ SwapsFromCME <- function(dates) {
     dplyr::summarise(ID = glue::glue("CME_{`Rpt ID`}"),
                      currency = `Leg 1 Notional Currency`,
                      notional = `Leg 1 Notional`,
-                     start.date = `Effective Date`,
-                     maturity.date = `Maturity Date`,
+                     start.date = as.character(`Effective Date`, 
+                                               format = "%d/%m/%Y"),
+                     maturity.date = as.character(`Maturity Date`, 
+                                                  format = "%d/%m/%Y"),
                      strike = dplyr::if_else(
                        `Leg 1 Type` %in% "Fixed",`Leg 1 Fixed Rate`, `Leg 2 Fixed Rate`),
                      type = dplyr::if_else(
