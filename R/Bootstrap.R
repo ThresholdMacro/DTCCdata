@@ -13,19 +13,25 @@ Boostrapper <- function(df, portfolio, curve, spot_date) {
   return(target)
 }
 
-BootstrapCurve <- function(spot_date, par.curve) {
+BootstrapCurve <- function(spot_date, par.curve, currency) {
 
+    calendar <- dplyr::case_when(
+      grepl("EUR", currency) ~ "TARGET",
+      grepl("JPY", currency) ~ "Japan",
+      TRUE ~ "UnitedStates"
+    )
+  
   curve <- list()
-  curve$currency <- "USD"
+  curve$currency <- currency
   curve$discount <- tibble::tibble(Date = spot_date, df = 1) 
   
   years <- par.curve |> 
     dplyr::pull(Bucket)
   
-  maturities <- CalculateEffectiveDate(spot_date) |> 
+  maturities <- CalculateEffectiveDate(spot_date, currency) |> 
     {\(x) x + lubridate::years(dplyr::pull(par.curve, Bucket))}() |> 
     {\(adjusted.date) RQuantLib::adjust(dates = adjusted.date, 
-                                        calendar = "UnitedStates")}()
+                                        calendar = calendar)}()
   
   strike <- par.curve |> 
     dplyr::pull(Strike)

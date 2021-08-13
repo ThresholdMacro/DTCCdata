@@ -1,7 +1,7 @@
 ---
 title: "Extending the duration analysis to any date and any source"
 author: "Davide Magno"
-date: "7/22/2021"
+date: Sys.Date()
 output:
   html_document:
     df_print: paged
@@ -53,14 +53,14 @@ This data needs to be filtered for USD spot starting fixed-floating interest rat
 Let's see how to use them:
 
 ```{r Swaps from DTCC, message=FALSE, warning=FALSE}
-swaps.dtcc <- SwapsFromDTCC(report.date)
+swaps.dtcc <- SwapsFromDTCC(report.date, "USD")
 
 swaps.dtcc
 ```
 We do the same with the CME data:
 
 ```{r Swaps from CME, message=FALSE, warning=FALSE}
-swaps.cme <- SwapsFromCME(report.date)
+swaps.cme <- SwapsFromCME(report.date, "USD")
 
 swaps.cme
 ```
@@ -232,7 +232,10 @@ We can notice that the intraday SEB data fits pretty well the Bloomberg one but 
 We reuse the information downloaded from DTCC using the *SwapsFromDTCC* function to extract a par swap curve that can be used for pricing. The idea behind its construction is that since these are from actual quotes, we should have some swaps with valuation below 0, others above 0 but the whole set of swaps in general will be close to par. We will use two methodologies to summarise the information by bucket: the mean of the strikes and the median of the strikes.
 
 ```{r, Extracting the Par Swap Curve}
-swap.curve <- swaps.dtcc |> 
+swaps.for.curve <- swaps.dtcc |> 
+  dplyr::filter(start.date == spot.date)
+
+swap.curve <- swaps.for.curve |> 
   dplyr::mutate(start.date = as.Date(start.date, format = "%d/%m/%Y"),
                 maturity.date = as.Date(maturity.date, format = "%d/%m/%Y"),
                 time.to.mat = round((maturity.date - start.date)/365,0) |> 
@@ -256,7 +259,7 @@ We now plot the curve derived over the information from DTCC:
 swap.curve <- swap.curve |> 
   tidyr::pivot_longer(-Bucket, names_to = "type", values_to = "Strike") 
 
-swaps.dtcc |> 
+swaps.for.curve |> 
   dplyr::mutate(start.date = as.Date(start.date, format = "%d/%m/%Y"),
                 maturity.date = as.Date(maturity.date, format = "%d/%m/%Y"),
                 time.to.mat = round((maturity.date - start.date)/365,0) |> 
@@ -283,14 +286,14 @@ swap.curve <- swap.curve |>
 
 source(here::here("R/Bootstrap.R"))
 
-curve <- BootstrapCurve(report.date, swap.curve)
+curve <- BootstrapCurve(report.date, swap.curve, "USD")
 
 curve$discount
 ```
 
 We can now price the swaps traded on the day using the curve bootstrapped at the previous step:
 
-```{r Priicing using the bootstrapped curve}
+```{r Pricing using the bootstrapped curve}
 pricing <- SwapPricer::SwapPortfolioPricing(swaps.dtcc, report.date, curve)
 
 pricing |> 
@@ -312,19 +315,29 @@ Let's see it in action on the date of the 18th of June which was the day of the 
 
 ```{r warning=FALSE}
 source(here::here("R/Routine.R"))
-results <- SwapsTRAnalysis(as.Date("2021-06-18"))
+results <- SwapsTRAnalysis(as.Date("2021-06-18"), "USD")
 ```
 
-We can now inspect the various outputs, starting from the pricing deviation from a 0 market value:
+<!-- We can now inspect the various outputs, starting from the pricing deviation from a 0 market value: -->
 
-```{r}
-results$priced.portfolio |> 
-  dplyr::summarise(deviation = abs(sum(clean.mv)/sum(pv01)))
-```
+<!-- ```{r} -->
+<!-- results$priced.portfolio |>  -->
+<!--   dplyr::summarise(deviation = abs(sum(clean.mv)/sum(pv01))) -->
+<!-- ``` -->
 
 Quality of pricing is much better than using the end of day curve from Bloomberg. We can then output the pv01 traded by duration bucket
 
 ```{r}
 plotly::ggplotly(results$histogram)
+```
+
+As it can be noticed by looking into the code, the SwapsTRAnalysis function can price swaps in USD but also EUR, GBP and JPY currencies. If we want a different currency, we just change the second entry to the function. Let's price the JPY swaps, for example:
+
+```{r warning=FALSE}
+results.gbp <- SwapsTRAnalysis(as.Date("2021-06-18"), "GBP")
+```
+
+```{r}
+plotly::ggplotly(results.gbp$histogram)
 ```
 
