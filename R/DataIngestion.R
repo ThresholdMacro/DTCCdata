@@ -15,14 +15,14 @@ CalculateEffectiveDate <- function(date, currency) {
 }
 
 DownloadFromDTCC <- function(dates) {
+
   purrr::map_dfr(dates, ~dataonderivatives::ddr(.x, "IR")) |> 
     dplyr::mutate(`Event Timestamp` = as.Date(`Event Timestamp`, format = "%Y-%m-%dT%H:%M:%S"),
                   `Effective Date` = as.Date(`Effective Date`),
                   `Expiration Date` = as.Date(`Expiration Date`),
                   `Spread 1` = as.numeric(`Spread 1`),
                   `Spread 2` = as.numeric(`Spread 2`),
-                  `Time to Mat` = (`Expiration Date` - `Effective Date`)/365 |> 
-                    as.numeric(),
+                  `Time to Mat` = (`Expiration Date` - `Effective Date`)/365,
                   `Notional Amount 1` = stringr::str_remove_all(`Notional Amount 1`, "\\,") |> 
                     stringr::str_remove("\\+") |> 
                     as.numeric(),
@@ -36,6 +36,7 @@ DownloadFromCME <- function(dates) {
     dplyr::mutate(`Dissemination Time` = as.Date(`Dissemination Time`, format = "%m/%d/%Y %H:%M:%S"),
                   `Effective Date` = as.Date(`Effective Date`, format = "%m/%d/%Y"),
                   `Maturity Date` = as.Date(`Maturity Date`, format = "%m/%d/%Y"),
+                  `Time to Mat` = (`Maturity Date` - `Effective Date`)/365,
                   `Leg 1 Designated Maturity` = stringr::str_remove_all(`Leg 1 Designated Maturity`, "Y") |> 
                     as.numeric(),
                   `Leg 2 Designated Maturity` = stringr::str_remove_all(`Leg 2 Designated Maturity`, "Y") |> 
@@ -47,6 +48,7 @@ DownloadFromCME <- function(dates) {
 
 SwapsFromCME <- function(dates, currency) {
   swaps <-  DownloadFromCME(dates) |> 
+    dplyr::distinct() |> 
     dplyr::filter(`Contract Type` == "InterestRateSwap",
                   `Leg 1 Notional Currency` == `Leg 2 Notional Currency`,
                   `Leg 1 Notional` == `Leg 2 Notional`,
@@ -59,7 +61,7 @@ SwapsFromCME <- function(dates, currency) {
   report.date <- max(swaps$`Spot Effective Date`)
   
   swaps |> 
-    dplyr::filter(`Effective Date` == `Spot Effective Date`) |> #To be relaxed
+    dplyr::filter(`Effective Date` >= report.date) |> 
     dplyr::summarise(ID = glue::glue("CME_{`Rpt ID`}"),
                      currency = `Leg 1 Notional Currency`,
                      notional = `Leg 1 Notional`,
@@ -72,7 +74,12 @@ SwapsFromCME <- function(dates, currency) {
                      type = dplyr::if_else(
                        `Leg 1 Type` %in% "Fixed", "receiver", "payer"),
                      standard = TRUE,
-                     spot.date = as.character(`Spot Effective Date`, format = "%d/%m/%Y")) 
+                     spot.date = as.character(`Dissemination Time`, format = "%d/%m/%Y"),
+                     time.to.mat = as.numeric(`Time to Mat`),
+                     cleared = dplyr::if_else(Cleared == "Intend to Clear", 
+                                              TRUE, FALSE)|> as.numeric(),
+                     forward.starting = dplyr::if_else(`Effective Date` == report.date,
+                                                       FALSE, TRUE)|> as.numeric())
   
 }
 
@@ -86,6 +93,7 @@ SwapsFromDTCC <- function(dates, currency) {
   )
 
   swaps <- DownloadFromDTCC(dates) |> 
+    dplyr::distinct() |> 
     dplyr::filter(`Product ID` == "InterestRate:IRSwap:FixedFloat",
                   Action == "NEW",
                   `Notional Currency 1` == currency | `Notional Currency 2` == currency,
@@ -93,14 +101,13 @@ SwapsFromDTCC <- function(dates, currency) {
                   `Payment Frequency Period 2` %in% standard.freq,
                   is.na(`Spread 1`) | `Spread 1` == 0,
                   is.na(`Spread 2`) | `Spread 2` == 0,
-                  Cleared == "C",
                   `Time to Mat` >= 1.0) |> 
     dplyr::mutate(`Spot Effective Date` = CalculateEffectiveDate(`Event Timestamp`, currency))
   
   report.date <- max(swaps$`Spot Effective Date`)
-  
+
   swaps |> 
-    dplyr::filter(`Effective Date` == report.date) |> #To be relaxed
+    dplyr::filter(`Effective Date` >= report.date) |> #To be relaxed
     dplyr::summarise(ID = glue::glue("DTCC_{`Dissemination ID`}"),
                      currency = `Notional Currency 1`,
                      notional = `Notional Amount 1` |> 
@@ -114,5 +121,9 @@ SwapsFromDTCC <- function(dates, currency) {
                      type = dplyr::if_else(
                        is.na(`Fixed Rate 1`), "payer", "receiver"),
                      standard = TRUE,
-                     spot.date = as.character(`Spot Effective Date`, format = "%d/%m/%Y")) 
+                     spot.date = as.character(`Event Timestamp`, format = "%d/%m/%Y"),
+                     time.to.mat = as.numeric(`Time to Mat`),
+                     cleared = dplyr::if_else(Cleared == "C", TRUE, FALSE) |> as.numeric(),
+                     forward.starting = dplyr::if_else(`Effective Date` == report.date,
+                                                       FALSE, TRUE)|> as.numeric())
 }
