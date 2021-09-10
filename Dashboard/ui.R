@@ -1,22 +1,29 @@
 library(shiny)
 library(shinydashboard)
+library(dashboardthemes)
 library(shinyWidgets)
 library(plotly)
 library(glue)
 
 dashboardPage(
-  dashboardHeader(title = "Swap Trading Dashboard"),
+  dashboardHeader(title = "Swap Trading Dashboard",
+                  titleWidth = 300),
   dashboardSidebar(width = "300px",
                    pickerInput(inputId = "dropdown_currency", 
                                "Choose the currency to visualize",
-                               choices = currency.options, selected = FALSE,
-                               multiple = FALSE),
+                               choices = currency.options, 
+                               selected = "USD",
+                               multiple = FALSE,
+                               choicesOpt = list(
+                                 style = rep("color: black;", 4))),
                    pickerInput(inputId = "dropdown_rates", 
                                "Choose the rates to visualize",
                                choices = curve.options, 
                                options = list(`actions-box` = TRUE),
                                selected = "10",
-                               multiple = TRUE),
+                               multiple = TRUE,
+                               choicesOpt = list(
+                                 style = rep("color: black;", 17))),
                    materialSwitch(inputId = "OnOffExchange", 
                                   label = "Include only cleared transactions?",
                                   status = "primary",
@@ -30,36 +37,43 @@ dashboardPage(
                                choices = bucket.options, 
                                options = list(`actions-box` = TRUE),
                                selected = "10-15",
-                               multiple = TRUE),
+                               multiple = TRUE,
+                               choicesOpt = list(
+                                 style = rep("color: black;", 12))),
                    pickerInput(inputId = "dropdown_type", 
                                "Choose the metric to visualize",
                                choices = metric.options,
-                               multiple = FALSE)
+                               multiple = FALSE,
+                               choicesOpt = list(
+                                 style = rep("color: black;", 2)))
   ),
   dashboardBody(
     fluidRow(
       box(
-        width = "100%",
+        width = "12 col-lg-12",
         title = "Interest Rate Data",
-        status = "primary",
         plotlyOutput("RatesGraph")
       )),
     fluidRow( 
       tabBox(
-        width = "100%",
+        width = "12 col-lg-12",
         title = "Trade Analysis",
-        tabPanel("Trade Data", 
+        side = "right",
+        tabPanel("Historical Timeseries", 
                  plotlyOutput("TradesData")),
-        tabPanel("One Day Data", 
+        tabPanel("Daily Data", 
                  fluidRow(
-                   dateInput("datepick", "Choose a Date",
-                             value = as.Date("2021-01-04"),
-                             min = as.Date("2021-01-04"),
-                             max = as.Date("2021-01-15"))
-                 ),
-                 fluidRow(
-                   column(6, plotlyOutput("histogram")),
-                   column(6, plotlyOutput("trades"))
+                   box(width = "6 col-lg-6",
+                       plotlyOutput("histogram")),
+                   box(width = "6 col-lg-6",
+                       fluidRow(
+                         column(6, dateInput("datepick", "Choose a Date",
+                                             value = as.Date("2021-01-04"),
+                                             min = as.Date("2021-01-04"))),
+                         column(6, textOutput("accuracy"),
+                                style = "text-align: center; padding:30px;")
+                       ),
+                       fluidRow(plotlyOutput("trades")))
                  )
         )
       )

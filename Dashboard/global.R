@@ -1,3 +1,5 @@
+options(shiny.reactlog = TRUE)
+
 currency.options <- c("EUR", "GBP", "JPY", "USD")
 
 bucket.options <- list(
@@ -20,9 +22,9 @@ metric.options <- c("Notional" = "notional", "Risk" = "pv01")
 # DB Functions ------------------------------------------------------------
 
 ConnectToDB <- function(){
-  db_user <- 'root'
-  db_password <- 'Scr@0p1960'
-  db_name <- 'trade_repo_swap_data'
+  db_user <- Sys.getenv("user")
+  db_password <-  Sys.getenv("password")
+  db_name <- Sys.getenv("dbname")
   db_host <- 'localhost'
   db_port <- 3306
   
@@ -35,12 +37,26 @@ ConnectToDB <- function(){
 
 GetPricing <- function(cleared.flag, forward.starting.flag, cur) {
   con <- ConnectToDB()
-
+  
   data <- tibble::as_tibble(DBI::dbReadTable(con, "pricing_results")) |> 
     dplyr::mutate(spot.date = as.Date(spot.date, format = "%d/%m/%Y")) |>
     dplyr::filter(cleared %in% cleared.flag,
                   forward.starting %in% forward.starting.flag)|> 
     dplyr::filter(currency %in% cur)
+  
+  DBI::dbDisconnect(con)
+  return(data)
+}
+
+
+GetAccuracy <- function(chosen.date, cur) {
+  con <- ConnectToDB()
+  
+  data <- tibble::as_tibble(DBI::dbReadTable(con, "accuracy")) |> 
+    dplyr::mutate(date = as.Date(date)) |>
+    dplyr::filter(currency %in% cur,
+                  date %in% chosen.date) |> 
+    dplyr::pull(accuracy)
   
   DBI::dbDisconnect(con)
   return(data)
@@ -57,7 +73,7 @@ GetCurve <- function(cur) {
 }
 
 
-# Functions ---------------------------------------------------------------
+# Calculation Functions ---------------------------------------------------------------
 
 SummarisePricing <- function(priced.portfolio) {
   priced.portfolio  |> 
@@ -76,7 +92,7 @@ CalculateDerivedMetric <- function(metric, metric.char, histo.rates) {
   
   histo.rates <- histo.rates |> 
     dplyr::filter(Bucket %in% rates) |> 
-    
+    dplyr::arrange(curve.date) |> 
     tidyr::pivot_wider(names_from = Bucket, values_from = Strike,
                        names_prefix = "Rate_") |> 
     dplyr::mutate(metric = metric.char)  |>  
@@ -101,18 +117,25 @@ CalculateRates <- function(histo.rates, metric) {
     purrr::map2_dfr(as.list(metric), ~CalculateDerivedMetric(.x, .y, histo.rates))
 }
 
-GetBucketDistribution <- function(priced.portfolio, date, 
-                                  bucket.options) {
-
-  priced.portfolio <- priced.portfolio |> 
-    dplyr::filter(spot.date %in% date)
-  
-  bucketed.results <- bucket.options |> 
+FillBuckets <- function(priced.portfolio, bucket.options) {
+  bucket.options |> 
     purrr::flatten() |> 
     unlist() |> 
     {\(buckets) tibble::tibble(Bucket = buckets)}() |> 
     dplyr::left_join(priced.portfolio, by = "Bucket") |> 
     tidyr::replace_na(list(notional = 0, pv01 = 0))
+}
+
+
+GetBucketDistribution <- function(priced.portfolio, date, 
+                                  bucket.options) {
+
+  bucketed.results <- priced.portfolio |> 
+    dplyr::group_nest(spot.date) |> 
+    dplyr::mutate(bucketed.results = purrr::map(data, FillBuckets, 
+                                                bucket.options)) |> 
+    dplyr::select(-data) |> 
+    tidyr::unnest(bucketed.results)
   
   return(bucketed.results)
 }
@@ -123,53 +146,84 @@ GetBucketDistribution <- function(priced.portfolio, date,
 PlotHistogram <- function(buckets.distribution, input) {
 
   buckets.distribution |> 
-    ggplot(aes(x = forcats::fct_inorder(Bucket, ordered = TRUE), 
-               y = !!sym(input))) +
-    geom_col() +
-    theme_bw() +
-    labs(x = "Buckets", y = paste0(stringr::str_to_sentence(input), " Traded")) +
-    scale_y_continuous(labels = scales::label_number(suffix = "m", scale = 1e-6))
+    dplyr::mutate(Bucket = forcats::fct_inorder(Bucket, ordered = TRUE)) |> 
+    plot_ly() |> 
+    add_bars(x = ~Bucket, y = ~get(input), frame = ~spot.date,
+             showlegend = FALSE) |> 
+    layout(yaxis = list(title = paste0(stringr::str_to_sentence(input), 
+                                       " Traded")),
+           xaxis = list(title = ""))
+  
 }
 
 PlotHistoryTrades <- function(priced.portfolio, bucket, input) {
 
-  priced.portfolio |> 
+  priced.portfolio <- priced.portfolio |> 
     dplyr::filter(Bucket %in% bucket) |> 
-    ggplot(aes_string(x = "spot.date", y = input, colour = "Bucket")) +
-    geom_point() + 
-    geom_line()+
-    theme_bw() +
-    labs(x = "Date", y = paste0(stringr::str_to_sentence(input), " Traded"), 
-         col = "Duration Bucket") +
-    scale_y_continuous(labels = scales::label_number(suffix = "m", scale = 1e-6))
+    dplyr::group_by(Bucket) |> 
+    mutate(ma = slider::slide_dbl(!!sym(input), 
+                                  ~ mean(.x, na.rm = TRUE),
+                                  .before = 5))
+
+  plot_ly(priced.portfolio) |>  
+    add_bars(x = ~spot.date, y = ~get(input), color = ~Bucket, 
+             opacity = 0.2,
+             showlegend = FALSE) |> 
+    add_lines(x = ~spot.date, y = ~ma, 
+              color = ~Bucket) |> 
+    layout(legend = list(title = list(text = "Duration Bucket"),
+                         orientation = 'h'),
+           yaxis = list(title = paste0(stringr::str_to_sentence(input), 
+                                       " Traded")),
+           xaxis = list(title = "Date",
+                        range = c(min(priced.portfolio$spot.date) - 1, 
+                                  max(priced.portfolio$spot.date) + 1),
+                        rangebreaks=list(
+                          list(bounds=list("sat", "mon"))))) |> 
+    config(displayModeBar = FALSE)
+  
 }
 
 PlotCurve <- function(curve) {
+  
   curve |> 
-    ggplot(aes(x = curve.date, y = rate, colour = metric)) +
-    geom_point() + 
-    geom_line() +
-    scale_y_continuous(labels = scales::percent)+
-    labs(x = "Date", y = "Rate", col = "Interest Rate Type") +
-    theme_bw()
+    dplyr::arrange(curve.date) |> 
+    plot_ly(type = "scatter", mode = "lines+markers") |>  
+    add_trace(x = ~curve.date, y = ~rate, color = ~metric) |> 
+    layout(legend = list(title = list(text = "Interest Rate"),
+                         orientation = 'h'),
+           yaxis = list(title = "Rate",
+                        tickformat= ".3%"),
+           xaxis = list(title = "Date",
+                        range = c(min(curve$curve.date) - 1, 
+                                  max(curve$curve.date) + 1),
+                        rangebreaks=list(
+                          list(bounds=list("sat", "mon")))))
   
 }
 
 PlotTradesAndCurve <- function(priced.portfolio, curve, date) {
+
   curve <- curve |> 
     dplyr::filter(curve.date %in% date)
- 
+
   priced.portfolio |> 
     dplyr::filter(spot.date %in% date) |> 
-    dplyr::select(ID, time.to.mat, strike, cleared , forward.starting, outlier) |> 
+    dplyr::select(spot.date, time.to.mat, strike, cleared, forward.starting, 
+                  outlier) |> 
     dplyr::mutate(type = dplyr::case_when(
       outlier == 1 ~ "Outlier removed", 
       cleared == 1 & forward.starting == 0 ~ "Cleared and spot starting", 
       TRUE ~ "Non cleared and/or forward starting" )) |> 
-    ggplot(aes(x = time.to.mat, y = strike, colour = type)) + 
-    geom_point(alpha = 0.2) + 
-    scale_y_continuous(labels = scales::percent) +
-    labs(x = "Tenor", y = "Interest Rate Level", col = "Type of trade") +
-    geom_point(data = curve, aes(x = Bucket, y = Strike, colour = "Pricing Rate")) + 
-    theme(legend.position="bottom")
+    plot_ly(type = "scatter", mode = "markers") |> 
+    add_trace(x = ~time.to.mat, y = ~strike, color = ~type,
+              opacity = 0.5) |> 
+    add_trace(data = curve, x = ~Bucket, y = ~Strike, name = "Pricing Rate",
+              marker = list(size = 8), color = "red") |>
+    layout(legend = list(title = list(text = "Type of trade"),
+                         orientation = 'h',
+                         y=-0.2),
+           yaxis = list(title = "Interest Rate Level",
+                        tickformat= ".3%"),
+           xaxis = list(title = "Tenor"))
 }

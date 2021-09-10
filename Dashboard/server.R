@@ -45,6 +45,10 @@ shinyServer(function(input, output) {
                           bucket.options)
   }) 
   
+  accuracy <- reactive({
+    GetAccuracy(input$datepick, input$dropdown_currency)
+  })
+  
   output$histogram <- renderPlotly(PlotHistogram(buckets.distribution(), 
                                                  input$dropdown_type))
   
@@ -57,5 +61,6 @@ shinyServer(function(input, output) {
   output$trades <- renderPlotly(PlotTradesAndCurve(pricing(), curve(),
                                                    input$datepick))
   
-  
+  output$accuracy <- renderText(glue::glue("The pricing accuracy is {sprintf('%.3f', accuracy())} \\
+                                            times the pv01"))
 })

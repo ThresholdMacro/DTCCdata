@@ -4,18 +4,37 @@ library(ggplot2)
 
 `%notin%` <- Negate(`%in%`)
 
-SwapsTRAnalysis <- function(date, currency) {
+RunOneDay <- function(date, currencies, cme.flag) {
   
-  logr::log_print(glue::glue("*** Analysing Day {date} and currency {currency} ***"))
+  purrr::map(currencies, 
+             ~SwapsTRAnalysis(as.Date(date, origin = "1970-01-01"), .x,
+                              cme.flag)) |> 
+    purrr::set_names(currencies) |> 
+    purrr::transpose() |> 
+    purrr::map(dplyr::bind_rows)
+}
+
+SwapsTRAnalysis <- function(date, currency, cme.flag) {
+
+  message(glue::glue("*** Analysing Day {date} and currency {currency} ***"))
   
   original.data.dtcc <- DownloadFromDTCC(date) |> 
     dplyr::distinct()
   
-  original.data.cme <- DownloadFromCME(date)|> 
-    dplyr::distinct()
+  dtcc.swaps <- SwapsFromDTCC(date, currency)
   
-  swaps.portfolio <- SwapsFromDTCC(date, currency) |> 
-    dplyr::bind_rows(SwapsFromCME(date, currency))
+  if (cme.flag) {
+    original.data.cme <- DownloadFromCME(date)|> 
+      dplyr::distinct()
+    
+    cme.swaps <- SwapsFromCME(date, currency)
+  } else {
+    original.data.cme <- NULL
+    cme.swaps <- NULL
+  }
+  
+  swaps.portfolio <- dtcc.swaps |> 
+    dplyr::bind_rows(cme.swaps)
 
   if (nrow(swaps.portfolio) > 0) {
     message("*** Data from the trade repository downloaded ***")
@@ -34,9 +53,13 @@ SwapsTRAnalysis <- function(date, currency) {
         right = TRUE),
         Bucket = as.character(Bucket) |> as.numeric()) 
       
-      message("*** Outlier Detection ***")
+      row.test <- swap.curve |> 
+        dplyr::select(-ID) |> 
+        dplyr::distinct(.keep_all = TRUE)
       
-      if (nrow(swap.curve) > 1) {
+      message("*** Outlier Detection ***")
+
+      if (nrow(row.test) > 1) {
         outlier <- swap.curve |> 
           dplyr::select(time.to.mat, strike) |> 
           outForest::outForest() |> 
@@ -50,12 +73,14 @@ SwapsTRAnalysis <- function(date, currency) {
         
         swaps.portfolio <- swaps.portfolio |> 
           dplyr::mutate(outlier = dplyr::if_else(ID %in% outlier.ID,
-                                                 TRUE, FALSE) |> as.numeric())
+                                                 TRUE, FALSE) |> as.numeric()) |> 
+          na.omit()
       } else {
-        outlier.ID <- NA
+        outlier.ID <- NULL
         
         swaps.portfolio <- swaps.portfolio |> 
-          dplyr::mutate(outlier = FALSE)
+          dplyr::mutate(outlier = FALSE) |> 
+          na.omit()
       }
 
       curve <- swap.curve |> 
@@ -65,7 +90,7 @@ SwapsTRAnalysis <- function(date, currency) {
         dplyr::mutate(currency = currency,
                       curve.date = date) |> 
         dplyr::select(curve.date, currency, Bucket, Strike)
-      
+
       message("*** Bootstrapping the implied market curve ***")
       df.curve <- BootstrapCurve(date, curve, currency)
       
@@ -80,7 +105,7 @@ SwapsTRAnalysis <- function(date, currency) {
           labels = c("0-1", "1-3", "3-4", "4-5", "5-7", "7-10", "10-15", "15-20", 
                      "20-25", "25-30", "30-40", "40-50", "50-100" ),
           right = FALSE))
-      
+
       results <- swaps.portfolio |> 
         dplyr::left_join(priced.portfolio, by = c("ID" = "swap.id", "currency",
                                                   "notional"))
@@ -92,7 +117,7 @@ SwapsTRAnalysis <- function(date, currency) {
         dplyr::summarise(accuracy = sum(clean.mv)/sum(pv01)) |> 
         dplyr::pull(accuracy)
       
-      if (length(outlier) > 0) {
+      if (length(outlier.ID) > 0) {
 
         fit.clean <- results |> 
           dplyr::filter(ID %in% swap.curve$ID,
@@ -115,8 +140,8 @@ SwapsTRAnalysis <- function(date, currency) {
       
       accuracy <- tibble::tibble(date = date, currency = currency, accuracy = fit)
       outliers.removed <- tibble::tibble(date = date, currency = currency, 
-                                         outliers_removed = length(outlier),
-                                         ratio = length(outlier)/nrow(swaps.portfolio))
+                                         outliers_removed = length(outlier.ID),
+                                         ratio = outliers_removed/nrow(swaps.portfolio))
       message("*** Portfolio Priced ***")
     } else {
       curve <- NULL
