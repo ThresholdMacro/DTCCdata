@@ -1,0 +1,373 @@
+---
+title: "DTCC Analysis"
+author: "Davide Magno"
+output:
+  html_document:
+    df_print: paged
+---
+
+### Reconciliation of the SwapPricer vs Bloomberg
+
+First step is to make sure that the SwapPricer package is able to price the 
+contracts we want to focus on (ie. USD fixed-float swaps).
+
+I have loaded in the *Data* folder a set of documents I was able to download 
+from Bloomberg. 
+
+Let's setup the run:
+
+1) First of all download SwapPricer from Github
+```{r Download SwapPricer, warning=FALSE}
+# Remove the comment once installed
+# remotes::install_github("DavideMagno/SwapPricer")
+```
+
+2) We define a custom swap portfolio. The notional is equal to the average notional 
+traded on the DTCC report and 10 years of duration. We test both at par and not 
+at par swaps. 
+```{r Define the portfolio}
+portfolio <- tibble::tribble(
+  ~ID, ~currency, ~notional, ~start.date, ~maturity.date, ~strike, ~type, ~standard,
+  "ATM", "USD", 80000000, "18-06-2021", "18-06-2031", 0.01396766, "receiver", TRUE,
+  "OTM", "USD", 80000000, "18-06-2021", "18-06-2031", 0.01000000, "receiver", TRUE
+)
+```
+
+3) We load the swap curve as in the file "Curve.xlsx" in the SwapPricing folder
+```{r Read the discount factors from the file}
+curve <- readxl::read_excel(here::here("Data/SwapPricing/Curve.xlsx")) |> 
+  dplyr::select(Date = `Maturity Date`, df = Discount) |> 
+  dplyr::mutate(Date = as.Date(Date, "%m/%d/%Y")) |> 
+  tibble::add_row(Date = as.Date("2021-06-18"), df = 1, .before = 1)
+```
+
+Some R technical notes:
+
+- I use the latest version of R (4.1.0) which has recently introduced a native pipe operator (you can read more about it  [here](https://towardsdatascience.com/the-new-native-pipe-operator-in-r-cbc5fa8a37bd)). Let me know if you can't manage to update it (*OK I've updated my desktop version to R-4.1.0 and updated RStudio too*)
+
+- I always use the notation *package::function* because a) typically it is the 
+most common way of coding for packages and b) it removes any ambiguity on whether
+a function is native R or belongs to a package. A bit more verbose but it goes well with
+the piping
+
+- I use the **here** package because it allows not to reset any directory when two (or more) people work on the same file on two (or more) different computers
+
+4) We setup the curve as required by the SwapPricer package
+```{r Create curve list}
+usd.curve <- list()
+usd.curve$currency <- "USD"
+usd.curve$discount <- curve
+```
+
+5) Before we can price the swaps, we need to load the time series of the libor for the
+floating rate: FRED has in fact stopped contributing it on the api, hence I downloaded a csv file from their [website](https://fred.stlouisfed.org/series/USD3MTD156N)
+
+```{r Reading the historical LIBOR rate, warning=FALSE}
+LiborRate <- readr::read_csv(here::here("Data/LiborRate.csv")) 
+```
+
+6) We can now price the two swaps:
+```{r Price the swaps, warning=FALSE}
+pricing.day <- as.Date("2021-06-18")
+SwapPricer::SwapPortfolioPricing(portfolio, pricing.day, usd.curve, LiborRate)
+```
+
+We compare the pricing with the screenshots from Bloomberg, starting from the ATM one: 
+
+![](`r here::here("Data/SwapPricing/ATM.PNG")`)
+
+The difference in pricing is pretty close: $27k of difference in MTM which is almost 0.35 times the pv01.
+Difference in pv01 is $900
+
+Let's see the ITM swap
+
+![](`r here::here("Data/SwapPricing/ITM.PNG")`)
+
+Difference in pricing has increased to $60k, which is still less than 1 pv01 (0.79)
+
+**Pricing is therefore in line with Bloomberg and we can use it for estimates**
+
+### Data wrangling the DTCC Report
+
+Let's start the analysis by loading the file
+
+```{r Load the file, warning=FALSE, message=FALSE}
+date <- "2021_06_18"
+
+# I use the readr package to read csvs because it doesn't assume that strings are factors by default
+
+IRTrade <- readr::read_csv(here::here(paste0("Data/DTCC",date,".csv")))
+```
+
+As agreed, let's start focusing only on: 
+
+- newly traded 
+- ATM 
+- Fixed-Float interest rate swaps
+- cleared  
+- in USD
+- standard conventions (this can be relaxed in the future)
+
+```{r Filter data}
+swaps <- IRTrade |> 
+  dplyr::mutate(`Notional Amount 1` = stringr::str_remove_all(`Notional Amount 1`, "\\,") |> 
+                  stringr::str_remove("\\+") |> 
+                  as.numeric(),
+                time.to.mat =  (`Expiration Date` - `Effective Date`)/365) |> 
+  dplyr::filter(`Product ID` == "InterestRate:IRSwap:FixedFloat",
+                Action == "NEW",
+                `Transaction Type` == "Trade",
+                `Notional Currency 1` == "USD",
+                `Payment Frequency Period 1` %in% c("3M", "6M"),
+                `Payment Frequency Period 2` %in% c("3M", "6M"),
+                Cleared == "C",
+                `Block Trade Election Indicator` == "N",
+                is.na(`Other Payment Amount`),
+                grepl("N",`Non-Standardized Pricing Indicator`))
+```
+
+We now have to put the swaps information in the right format for the SwapPricer:
+
+```{r Wrange the DTCC data for the SwapPricer}
+swap.DTCC.portfolio <- swaps |> 
+  dplyr::summarise(ID = `Dissemination ID`,
+                   currency = `Notional Currency 1`,
+                   notional = `Notional Amount 1` |> 
+                     stringr::str_replace_all(",","") |> 
+                     as.numeric(),
+                   start.date = as.character(`Effective Date`, format = "%d/%m/%Y"),
+                   maturity.date = as.character(`Expiration Date`, format = "%d/%m/%Y"),
+                   strike = dplyr::if_else(
+                     is.na(`Fixed Rate 1`),`Fixed Rate 2`, `Fixed Rate 1`),
+                   type = dplyr::if_else(
+                     is.na(`Fixed Rate 1`), "payer", "receiver"),
+                   standard = TRUE,
+                   time.to.mat = time.to.mat) 
+```
+
+and price them using the swap pricer.
+
+```{r Price the DTCC swaps, warning=FALSE}
+
+priced.DTCC.portfolio <- SwapPricer::SwapPortfolioPricing(swap.DTCC.portfolio, pricing.day, usd.curve, LiborRate)
+
+priced.DTCC.portfolio
+```
+
+The pricing allows us to infer some interesting information on the swaps traded on the day:
+
+1) Not all the swaps could be priced. A significant number in fact has **NA** as market value. Let's analyse them from a time to maturity perspective:
+
+```{r Analyse swaps not priced}
+not.priced.ids <- priced.DTCC.portfolio |> 
+  dplyr::filter(is.na(clean.mv)) |> 
+  dplyr::pull(swap.id)
+
+swap.DTCC.portfolio |> 
+  dplyr::filter(ID %in% not.priced.ids) |> 
+  dplyr::mutate(time.to.mat = (lubridate::dmy(maturity.date) - lubridate::dmy(start.date))) |> 
+  dplyr::select(ID, start.date, maturity.date, time.to.mat) |> 
+  dplyr::count(time.to.mat)
+
+```
+
+We can see that the swaps not priced have a time to maturity of around 3 months. We can then remove them from the analysis as they are actually FRAs rather than swaps.
+
+```{r Removal of FRAs}
+
+`%notin%` <- Negate(`%in%`)
+
+priced.DTCC.portfolio <- priced.DTCC.portfolio |> 
+  dplyr::filter(swap.id %notin% not.priced.ids)
+
+swap.DTCC.portfolio <- swap.DTCC.portfolio |> 
+  dplyr::filter(ID %notin% not.priced.ids)
+```
+
+
+2) Even though most of the swaps are supposed to be priced at par, we can notice that the market value is significantly different from 0. The deviation column calculates the difference from a 0 market value in numbers of pv01s.
+
+```{r Pricing Summary}
+priced.DTCC.portfolio |> 
+  dplyr::summarise_if(is.numeric, sum) |> 
+  dplyr::select(-par) |> 
+  dplyr::mutate(deviation = clean.mv/pv01)
+```
+
+We can therefore analyse the fixed rates in the DTCC file (black dots), vs the swap curve from BBG that we used for pricing (red dots - we only included actual swap rates, without extrapolating them from the middle part of the curve made of swaptions)
+
+```{r Plotting the strikes, echo = FALSE}
+strike.table <- swap.DTCC.portfolio |> 
+  dplyr::filter(ID %notin% not.priced.ids) |> 
+  dplyr::mutate(time.to.mat = (lubridate::dmy(maturity.date) - lubridate::dmy(start.date))/365) |> 
+  dplyr::mutate(time.to.mat = as.numeric(time.to.mat)) |> 
+  dplyr::filter(time.to.mat >= 4.0) |> 
+  dplyr::select(ID, start.date, time.to.mat, strike)
+
+par.rates <- readxl::read_excel(here::here("Data/SwapPricing/Curve.xlsx")) |> 
+  dplyr::filter(Source %in% "DETAILED_SWAP") |> 
+  dplyr::select(Date = `Maturity Date`, rate = `Market Rate`) |> 
+  dplyr::mutate(time.to.mat = (lubridate::mdy(Date) - lubridate::dmy("18/06/2021"))/365) |> 
+  dplyr::mutate(time.to.mat = as.numeric(time.to.mat),
+                rate = rate/100) |> 
+  dplyr::select(time.to.mat, rate)
+
+library(ggplot2)
+
+strike.table |> 
+  ggplot(aes(x = time.to.mat, y = strike)) + 
+  geom_point(alpha = 0.2)  + 
+  geom_point(data = par.rates, aes(x = time.to.mat, y = rate), 
+             colour = "red", size = 2) + 
+  theme_bw() + 
+  labs(x = "Time to maturity", y = "Rate") + 
+  scale_y_continuous(labels = scales::percent)
+
+```
+
+We can notice that:
+- there is a significantly wide range of strikes traded especially on the 5, 10 and 30 years maturity. Are these out of the money trades or do intra-day movements justify these deviations? Let's analyse the dynamic of the intraday rate from Bloomberg:
+![](`r here::here("Data/SwapPricing/Intraday Rates.PNG")`)
+The intra-day rates have been particularly volatile with an average of 12bps of decrease from the intraday. This justifies the fact that the red dots are at the lower bottom of the range. Let's repeat the analysis removing all the trades that are at max 12 bps above the swap rate used for pricing:
+
+```{r Non-ATM swaps, echo = FALSE}
+par.rates <- par.rates |> 
+  dplyr::mutate(time.to.mat = round(time.to.mat, 0))
+
+strike.table <- strike.table |> 
+  dplyr::mutate(time.to.mat = round(time.to.mat, 0)) |> 
+  dplyr::left_join(par.rates, by = "time.to.mat") |> 
+  dplyr::filter(strike > rate + 12*10^-4)
+
+```
+From the analysis, the number of trades that have been struck outside the range of reasonable levels of moneyness is `r nrow(strike.table)` out of `r nrow(swap.DTCC.portfolio)`. 
+
+Let's analyse the pricing to see where most of the differences come from:
+
+```{r Impact of non-ATM strikes}
+non.atm.ids <- strike.table |> 
+  dplyr::select(ID) |> 
+  dplyr::mutate(ID = as.character(ID),
+                group = "Not ATM")
+
+priced.DTCC.portfolio |> 
+  dplyr::left_join(non.atm.ids, by = c("swap.id" = "ID")) |> 
+  dplyr::mutate(group = dplyr::if_else(is.na(group), "ATM", "Not ATM")) |> 
+  dplyr::group_by(group) |> 
+  dplyr::summarise_if(is.numeric, sum) |> 
+  dplyr::select(-par) |> 
+  dplyr::mutate(deviation = clean.mv/pv01)
+
+```
+
+As expected, most of the deviation comes from the swaps that are outside of the 12bps intra-day range we have identified. Still, the deviation in terms of pv01 is not in the space of 1 (or lower, if possible) which means that intraday data does matter when we look at the DTCC data and we price it.
+
+Why have there been so many trades with strikes far from the ATM market quotes? Analyzing these trade we can say that a lot depends on the start date of the swaps. Considering the convention of "D+2" a spot starting swap traded on the 18th would have an effective date of the 22nd. We see if there are swaps that are not spot starting.
+
+```{r Analysis of non-ATM strikes}
+strike.table <- strike.table |> 
+  dplyr::mutate(start.date = lubridate::dmy(start.date)) |> 
+  dplyr::mutate(type = dplyr::case_when(
+    start.date > as.Date("2021-06-22") ~ "Forward starting",
+    start.date < as.Date("2021-06-22") ~ "Initiated before the 22nd of June",
+    TRUE ~ "Spot starting"
+  )) 
+
+strike.table |> 
+  dplyr::count(type)
+```
+
+We can hence conclude that the vast majority of swaps that have a par rate not in line with the intraday movements of the spot swap rates are forward starting. 
+
+## Duration Analysis
+
+Let's for now limit the analysis to spot starting swaps and calculate the duration for each of the swaps:
+
+```{r Calculation of swap duration, warning=FALSE}
+strike.table <- strike.table |> 
+  dplyr::filter(type %notin% "Spot starting")
+
+duration.table <- swap.DTCC.portfolio |> 
+  dplyr::filter(ID %notin% strike.table$ID) |> 
+  SwapPricer::SwapPortfolioPricing(pricing.day, usd.curve, LiborRate, duration.flag = TRUE) |> 
+  dplyr::select(swap.id, notional, clean.mv, pv01, duration)
+```
+
+From a coding perspective we just note that the formula is the same used above but we included a **duration.flag = TRUE** to indicate that we want to calculate duration as well. 
+
+We are finally in a position of calculating a notional weighted average duration traded:
+
+```{r Average duration traded}
+duration.table |> 
+  with(sum(notional * duration)/sum(notional))
+```
+
+Another interesting analysis is to see whether there is difference in duration traded between payer and receiver swaps:
+
+```{r Duration Traded By side, paged.print=TRUE}
+ids.side <- swap.DTCC.portfolio |> 
+  dplyr::select(swap.id = ID, type) |> 
+  dplyr::mutate(swap.id = as.character(swap.id))
+
+duration.table |> 
+  dplyr::left_join(ids.side, by = "swap.id") |> 
+  dplyr::group_by(type) |> 
+  dplyr::summarise(`Total Notional` = sum(notional),
+                   `Average Duration` = sum(notional * duration)/sum(notional))
+```
+
+We notice no significant differences between the two sides of the trade (less than 1 year) but the vast majority of the notional is on one direction.
+
+We can now look at the distribution of the duration traded by binning the contracts by duration 
+
+```{r Plot of notional traded by bucket}
+bucket.table <- duration.table |> 
+  dplyr::mutate(Bucket = cut(
+    duration,
+    breaks = c(0, 1, 3, 4, 5, 7, 10, 15, 20, 25, 30, 40, 50, 100),
+    labels = c("0-1", "1-3", "3-4", "4-5", "5-7", "7-10", "10-15", "15-20", "20-25", "25-30", "30-40", "40-50", "50-100" ),
+    right = FALSE)) 
+
+p <- bucket.table |> 
+  dplyr::group_by(Bucket) |> 
+  dplyr::summarise(Notional = sum(notional)) |> 
+  ggplot(aes(x = Bucket, y = Notional, text = sprintf("Notional: %s", scales::comma(Notional)))) + 
+  geom_col() + 
+  theme_bw() + 
+  labs(x = "Buckets", y = "Notional Traded") + 
+  scale_y_continuous(labels = scales::label_number(suffix = "bn", scale = 1e-9)) 
+
+fig <- plotly::ggplotly(p, tooltip=c("Bucket", "text"))
+
+fig
+```
+Instead of plotting the distribution of the duration by notional traded, we can look at the number of trades:
+
+```{r Plot of number of trades by bucket}
+p <- bucket.table |> 
+  ggplot(aes(x = Bucket)) + 
+  geom_bar() + 
+  theme_bw() + 
+  labs(x = "Buckets", y = "Number of trades") 
+
+fig <- plotly::ggplotly(p)
+fig
+```
+
+It is interesting to see that in the buckets 1-3 and 4-5 there are few trades but with higher notional. This means that there is someone on the market trying to have a decent risk exposure in the short term part of the curve increasing the notional of the trades. We can summarise the information coming from both these graphs looking at the pv01 by bucket.
+
+```{r Plot of PV01 traded by bucket}
+p <- bucket.table |> 
+  dplyr::group_by(Bucket) |> 
+  dplyr::summarise(pv01 = sum(pv01)) |> 
+  ggplot(aes(x = Bucket, y = pv01, text = sprintf("PV01: %s", scales::comma(pv01)))) + 
+  geom_col() + 
+  theme_bw() + 
+  labs(x = "Buckets", y = "PV01 Traded") + 
+  scale_y_continuous(labels = scales::label_number(suffix = "m", scale = 1e-6)) 
+
+fig <- plotly::ggplotly(p, tooltip=c("Bucket", "text"))
+
+fig
+```
+We can finally observe that the market is mostly trading risk in the 7-10 bucket and that it is doing it quite consistently in one direction but we don't know exactly if the market is shorting or going long the risk, because the DTCC data doesn't say whether the "Leg 1" is payer or receiver. For pricing purposes we had to choose a side. We need to further "read through" the data to see if we can deduct this information from it. 

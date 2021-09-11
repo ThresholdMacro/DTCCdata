@@ -1,0 +1,343 @@
+---
+title: "Extending the duration analysis to any date and any source"
+author: "Davide Magno"
+date: Sys.Date()
+output:
+  html_document:
+    df_print: paged
+---
+
+We want to repeat the analysis performed in the *StatusReport.html* file at any given date. To do this we need to solve two problems:
+
+1. Find an easy and robust way to download the DTCC data and, potentially, adding new sources of information.
+
+2. Find a source of information for interest rate curve data that addresses the issue of intraday movements that we analysed in the previous report
+
+# Dowloading Data
+
+We use the **dataonderivatives** package to source automatically the information from the various sources. Please note that we can't use the original package available on CRAN. I hence forked the repository on Github and modified it to account for the new link where DTCC reports can be retrieved from. This is why there is the command remotes::install_github("DavideMagno/dataonderivatives") in the next chunck of code.
+
+The data that is downloaded with this package needs to be formatted to be used. That's why I created two functions in the *DataIngestion.R* file:
+
+- **DownloadFromDTCC**: download the DTCC report at given dates (even more than one at the same time) and fix dates and notional formatting
+
+- **DownloadFromCME**: download the DTCC report at given dates (even more than one at the same time) and fix dates, time to maturity formatting and saves the floating rate type
+
+Let's see how to use these functions, with a date different from the 18th of June.
+
+```{r Downloading DTCC data, message=FALSE, warning=FALSE}
+# remotes::install_github("DavideMagno/dataonderivatives")
+source(here::here("R/DataIngestion.R"))
+report.date <- as.Date("2021-06-16")
+data <- DownloadFromDTCC(report.date) 
+
+data
+```
+The same can be done for the CME source and this time we download multiple days of data.
+
+```{r Downloading CME data, message=FALSE, warning=FALSE}
+dates <- as.Date("2021-06-07") + lubridate::days(0:4)
+
+data.cme <- DownloadFromCME(dates) 
+
+data.cme
+```
+We can notice that the CME data has much less information than the DTCC.
+
+This data needs to be filtered for USD spot starting fixed-floating interest rate swaps with a maturity above 1 year, which is the core of our analysis. It also needs to be formatted in a way that is readable for the **SwapPricer** package. This is performed by the following two functions:
+
+- **SwapsFromDTCC**: it takes a vector of dates in input and it downloads, wrangles, filter and put the DTCC data in the right format for the SwapPricer
+
+- **SwapsFromCME**: it takes a vector of dates in input and it downloads, wrangles, filter and put the CME data in the right format for the SwapPricer
+
+Let's see how to use them:
+
+```{r Swaps from DTCC, message=FALSE, warning=FALSE}
+swaps.dtcc <- SwapsFromDTCC(report.date, "USD")
+
+swaps.dtcc
+```
+We do the same with the CME data:
+
+```{r Swaps from CME, message=FALSE, warning=FALSE}
+swaps.cme <- SwapsFromCME(report.date, "USD")
+
+swaps.cme
+```
+
+The output is empty because there are no swaps with the specific characteristics we have chosen.
+
+# Application: Comparison with ISDA Data
+
+A practical application of the functions described in the previous section is the comparison between the raw data provided by DTCC and the one provided by ISDA at the following website: [http://swapsinfo.org/derivatives-transaction-data/](http://swapsinfo.org/derivatives-transaction-data/). When calling the *DownloadFromDTCC* we are passing a vector of dates. The function will then source and collate all the reports on its own. We limit the analysis to USD fixed-to-float interest rate swaps. We calculate then the total notional and number of trades exchanged in one day.
+
+```{r Downloading a full month of data from DTCC, message=FALSE, warning=FALSE}
+
+data.from.dtcc <- (as.Date("2021-05-31") + lubridate::days(0:30)) |> 
+  DownloadFromDTCC() |> 
+  dplyr::filter(grepl("InterestRate:IRSwap:FixedFloat", `Product ID`),
+                `Notional Currency 1` %in% "USD",
+                !is.na(`Notional Currency 1`),
+                Action == "NEW",
+                `Transaction Type` == "Trade",
+                `Event Timestamp` >= as.Date("2021-06-01"),
+                `Event Timestamp` <= as.Date("2021-06-30")) |> 
+  dplyr::group_by(`Event Timestamp`) |> 
+  dplyr::summarise(`Traded Notional` = sum(`Notional Amount 1`),
+                   `Trade Count` = dplyr::n()) |> 
+  dplyr::rename("Date" = `Event Timestamp`) |> 
+  dplyr::mutate(Source = "DTCC")
+
+data.from.dtcc
+
+```
+
+We download a report with the daily data reported on the ISDA webpage and wrangle to put in the same format as the DTCC one.
+
+![](`r here::here("Data/ISDA Analysis/ISDA Screenshot.png")`)
+
+```{r Import ISDA data, message=FALSE, warning=FALSE}
+data.from.isda <- readr::read_csv(here::here("Data/ISDA Analysis/IRD Transaction Data.csv")) |> 
+  dplyr::select(-`PRODUCT NAME`) |> 
+  dplyr::mutate(DATE = as.Date(DATE),
+                Source = "ISDA") 
+
+colnames(data.from.isda) <- stringr::str_to_title(colnames(data.from.isda))
+
+data.from.isda
+```
+
+We plot the comparison of the two sources as grouped bars.
+
+```{r Graph of the results, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(patchwork)
+
+p1 <- data.from.dtcc |> 
+  dplyr::bind_rows(data.from.isda) |> 
+  ggplot(aes(x = Date, y = `Traded Notional`, fill = Source)) + 
+    geom_bar(stat="identity", position = "dodge")
+
+p2 <- data.from.dtcc |> 
+  dplyr::bind_rows(data.from.isda) |> 
+  ggplot(aes(x = Date, y = `Trade Count`, fill = Source)) + 
+    geom_bar(stat="identity", position = "dodge")
+
+combined.graph <- p1 / p2
+combined.graph + patchwork::plot_annotation(
+  title = "Comparison of DTCC and ISDA data",
+  subtitle = "Data for the month of June 2021"
+)
+```
+
+We can notice that from a total traded notional perspective, the DTCC and ISDA data are almost perfectly aligned. 
+The number of trades show a bit more deviation with the number of trades on DTCC being typically higher than the one reported by ISDA. It is possible then that the latter filters the raw data even further. 
+
+As we have seen, other trade repositories (like CME) that could be publishing data. In particular, in this link  the CFTC publishes the status for all the data repositories that have applied to act as such [https://sirt.cftc.gov/sirt/sirt.aspx?Topic=DataRepositories](https://sirt.cftc.gov/sirt/sirt.aspx?Topic=DataRepositories). From the link, the only trade repositories that are currently working are DTCC and CME. The others:
+
+ - ICE only operates on commodities and credit
+ 
+ - Bloomberg SDR has withdrawn in 2019. This used to be a source for the ISDA website you showed me, which is therefore left only with DTCC
+
+From this quantitative and qualitative analysis, we can hence conclude that DTCC is an extremely well representative data source for the derivatives 
+
+
+# Source of Pricing Data
+
+We have seen in the *StatusReport.html* file that taking into account realtime data is extremely important for pricing: the deviation of Market Values from 0 is in fact in the spae of 3/4 PV01s even for spot starting swaps.
+
+We have therefore followed two different routes:
+
+1. Scraping Realtime Data from the SEB website
+
+2. Using the very same downloaded data from DTCC or CME as source of par rates
+
+## Using SEB data
+
+We hence downloaded the intraday USD swap rate from Bloomberg for the maturities of 10, 20 and 30 years during the week between the 5th and the 9th of July. These are saved in an excel file in the Intraday Pricing folder.
+
+```{r Wrangle BBG Intraday Data, message=FALSE, warning=FALSE}
+intraday.rates <- readxl::read_excel(here::here("Data/Intraday Pricing/IntradaySwaps.xlsx"), skip = 3)
+
+TableIntradayData <- function(columns, maturity, data) {
+  data |> 
+    dplyr::select(columns) |> 
+    na.omit() |> 
+    dplyr::rename_all(~c("Date", "Value")) |> 
+    dplyr::mutate(Maturity = maturity, 
+                  Source = "Bloomberg") |> 
+    dplyr::select(Maturity, Value, Date, Source)
+}
+
+intraday.bbg <- purrr::map2_dfr(list(1:2, 4:5, 7:8), c(10, 20, 30), TableIntradayData, data = intraday.rates)
+
+intraday.bbg
+```
+
+We scrape the SEB rates on minute by minute basis and save them on a database. 
+
+```{r Extract SEB Data from DB, paged.print=TRUE}
+ConnectToDB <- function(){
+  db_user <- 'Rstudio'
+  db_password <- 'Karelias123$'
+  db_name <- 'swap_rates'
+  db_host <- '167.71.3.141'
+  db_port <- 3306
+  
+  mydb <-  RMySQL::dbConnect(RMySQL::MySQL(), user = db_user,
+                             password = db_password, dbname = db_name,
+                             host = db_host, port = db_port)
+}
+
+con <- ConnectToDB()
+intraday.seb <- con |>
+  DBI::dbReadTable("usd_swap_rates") |> 
+  dplyr::rename(Value = Price) |>
+  dplyr::filter(Date >= as.Date("2021-07-05"),
+                Date <= as.Date("2021-07-09"),
+                Maturity %in% c(10, 20, 30)) |>
+  dplyr::mutate(Date = as.POSIXct(paste(lubridate::ymd(Date), Time)),
+                Source = "SEB",
+                Date = Date + lubridate::hours(4)) |> # UTC is 4 hours ahead of EST in summer
+  dplyr::select(-Time)
+DBI::dbDisconnect(con)
+
+intraday.seb
+
+```
+
+We collate the data into one dataframe.
+
+```{r}
+intraday <- intraday.seb |> 
+  dplyr::bind_rows(intraday.bbg)
+
+```
+
+We plot the data by maturity and distinguishing between SEB and Bloomberg
+
+```{r message=FALSE, warning=FALSE}
+library(ggplot2)
+intraday |> 
+  ggplot(aes(x = Date, y = Value, colour = Source)) + 
+  geom_line() +
+  facet_grid(rows = vars(Maturity), scales = "free_y")
+```
+
+We can notice that the intraday SEB data fits pretty well the Bloomberg one but the SEB website publishes data on European trading time. This means that it misses the market movements after ~5pm UTC.
+
+
+## Using the data repository information
+
+We reuse the information downloaded from DTCC using the *SwapsFromDTCC* function to extract a par swap curve that can be used for pricing. The idea behind its construction is that since these are from actual quotes, we should have some swaps with valuation below 0, others above 0 but the whole set of swaps in general will be close to par. We will use two methodologies to summarise the information by bucket: the mean of the strikes and the median of the strikes.
+
+```{r, Extracting the Par Swap Curve}
+swaps.for.curve <- swaps.dtcc |> 
+  dplyr::filter(start.date == spot.date)
+
+swap.curve <- swaps.for.curve |> 
+  dplyr::mutate(start.date = as.Date(start.date, format = "%d/%m/%Y"),
+                maturity.date = as.Date(maturity.date, format = "%d/%m/%Y"),
+                time.to.mat = round((maturity.date - start.date)/365,0) |> 
+                  as.numeric(),
+                Bucket = cut(
+                  as.numeric(time.to.mat),
+                  breaks = c(seq(from = 0.5,to = 12.5, by = 1), 
+                             seq(from = 17.5,to = 52.5, by = 5)),
+                  labels = c(1:12, seq(from = 15, to = 50, by = 5)),
+                  right = FALSE),
+                Bucket = as.character(Bucket) |> as.numeric()) |> 
+  dplyr::group_by(Bucket) |> 
+  dplyr::summarise(Strike.median = median(strike),
+                   Strike.mean = mean(strike))
+
+swap.curve
+```
+We now plot the curve derived over the information from DTCC:
+
+```{r Plotting the implied curve, message=FALSE, warning=FALSE}
+swap.curve <- swap.curve |> 
+  tidyr::pivot_longer(-Bucket, names_to = "type", values_to = "Strike") 
+
+swaps.for.curve |> 
+  dplyr::mutate(start.date = as.Date(start.date, format = "%d/%m/%Y"),
+                maturity.date = as.Date(maturity.date, format = "%d/%m/%Y"),
+                time.to.mat = round((maturity.date - start.date)/365,0) |> 
+                  as.numeric()) |> 
+  ggplot(aes(x = time.to.mat, y = strike)) + 
+  geom_point(alpha = 0.2)  + 
+  geom_point(data = swap.curve, aes(x = Bucket, y = Strike, colour = type), 
+             size = 2) + 
+  theme_bw() + 
+  labs(x = "Time to maturity", y = "Rate") + 
+  scale_y_continuous(labels = scales::percent)
+```
+
+We now have a swap par curve that we can use for pricing. 
+
+# Bootstrapping and Pricing
+
+In order to test this, we need to bootstrap the curve we have just generated. 
+The procedure is 
+
+```{r Bootstrapping the median curve}
+swap.curve <- swap.curve |>
+  dplyr::filter(grepl("median", type))
+
+source(here::here("R/Bootstrap.R"))
+
+curve <- BootstrapCurve(report.date, swap.curve, "USD")
+
+curve$discount
+```
+
+We can now price the swaps traded on the day using the curve bootstrapped at the previous step:
+
+```{r Pricing using the bootstrapped curve}
+pricing <- SwapPricer::SwapPortfolioPricing(swaps.dtcc, report.date, curve)
+
+pricing |> 
+  dplyr::summarise(deviation = sum(clean.mv)/sum(pv01))
+```
+
+As the deviation is below 1, the pricing is acceptable hence the curve derived from the trades is a good representation of the interest rates prevailing during the day.
+
+## Adding all up
+
+A function called **SwapsTRAnalysis** performs automatically all the steps above. It only requires a date as input and then it automatically:
+
+ - downloads and filters the swap data
+ - derives and bootstrapps the implied interest rates prevailing during the day 
+ - prices the swaps with the bootstrapped curve
+ - calculates the pv01 histogram as function of the duration buckets
+ 
+Let's see it in action on the date of the 18th of June which was the day of the analysis for Milestone 1.
+
+```{r warning=FALSE}
+source(here::here("R/Routine.R"))
+results <- SwapsTRAnalysis(as.Date("2021-06-18"), "USD")
+```
+
+<!-- We can now inspect the various outputs, starting from the pricing deviation from a 0 market value: -->
+
+<!-- ```{r} -->
+<!-- results$priced.portfolio |>  -->
+<!--   dplyr::summarise(deviation = abs(sum(clean.mv)/sum(pv01))) -->
+<!-- ``` -->
+
+Quality of pricing is much better than using the end of day curve from Bloomberg. We can then output the pv01 traded by duration bucket
+
+```{r}
+plotly::ggplotly(results$histogram)
+```
+
+As it can be noticed by looking into the code, the SwapsTRAnalysis function can price swaps in USD but also EUR, GBP and JPY currencies. If we want a different currency, we just change the second entry to the function. Let's price the JPY swaps, for example:
+
+```{r warning=FALSE}
+results.gbp <- SwapsTRAnalysis(as.Date("2021-06-18"), "GBP")
+```
+
+```{r}
+plotly::ggplotly(results.gbp$histogram)
+```
+
