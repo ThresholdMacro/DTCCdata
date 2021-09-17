@@ -8,6 +8,8 @@
 #
 
 library(shiny)
+library(openxlsx)
+
 
 # Define server logic required to draw a histogram
 shinyServer(function(input, output) {
@@ -49,18 +51,56 @@ shinyServer(function(input, output) {
     GetAccuracy(input$datepick, input$dropdown_currency)
   })
   
-  output$histogram <- renderPlotly(PlotHistogram(buckets.distribution(), 
-                                                 input$dropdown_type))
+  output$error_text <- renderText({"Please select at least one interest rate metric"})
   
-  output$TradesData <- renderPlotly(PlotHistoryTrades(pricing.filter(), 
-                                                      input$dropdown_tenors,
-                                                      input$dropdown_type)) 
+  output$error_text_tenor <- renderText({"Please select at least one bucket"})
   
-  output$RatesGraph <- renderPlotly(PlotCurve(selected.rates()))
+  histogram <- reactive({PlotHistogram(buckets.distribution(), 
+                                       input$dropdown_type)})
   
-  output$trades <- renderPlotly(PlotTradesAndCurve(pricing(), curve(),
-                                                   input$datepick))
+  output$histogram <- renderPlotly(histogram()$plot)
+  
+  tradesdata <- reactive({
+    PlotHistoryTrades(pricing.filter(), 
+                      input$dropdown_tenors,
+                      input$dropdown_type)
+  })
+  
+  output$TradesData <- renderPlotly(tradesdata()$plot) 
+  
+  plotcurve <- reactive({
+    PlotCurve(selected.rates()$result)
+  })
+  
+  output$RatesGraph <- renderPlotly(plotcurve()$plot)
+  
+  trades <- reactive({
+    PlotTradesAndCurve(pricing(), curve(), input$datepick)
+  })
+  
+  output$trades <- renderPlotly(trades()$plot)
   
   output$accuracy <- renderText(glue::glue("The pricing accuracy is {sprintf('%.3f', accuracy())} \\
                                             times the pv01"))
+  
+  date <- reactive({output$datepick})
+  
+  output$Download <- downloadHandler(
+    filename <- function() {
+      "TradeRepositoryData.xlsx"
+    },
+    content <- function(file) {
+      wb <- createWorkbook()
+      addWorksheet(wb, sheetName = "Interest Rates")
+      writeData(wb, sheet = "Interest Rates", plotcurve()$data, rowNames = FALSE) 
+      addWorksheet(wb, sheetName = "Trading Data")
+      writeData(wb, sheet = "Trading Data", tradesdata()$data, rowNames = FALSE) 
+      addWorksheet(wb, sheetName = "Distribution")
+      writeData(wb, sheet = "Distribution", histogram()$data, rowNames = FALSE) 
+      addWorksheet(wb, sheetName = "Trades and Pricing Curve")
+      writeData(wb, sheet = "Trades and Pricing Curve", 
+                trades()$data, rowNames = FALSE) 
+      saveWorkbook(wb, file, overwrite = TRUE)
+    })
+  
 })
