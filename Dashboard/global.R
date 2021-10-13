@@ -5,7 +5,7 @@ currency.options <- c("EUR", "GBP", "JPY", "USD")
 bucket.options <- list(
   "Short Term" = list("0-1", "1-3"),
   "Medium Term" = list("3-4", "4-5", "5-7", "7-10"),
-  "Long Term" = list("10-15", "15-20", "20-25", "25-30",
+  "Long Term" = list("10-15", "15-20", "20-25", "25-30", "30-40",
                      "40-50", "50-100"))
 
 
@@ -37,12 +37,13 @@ ConnectToDB <- function(){
 
 GetPricing <- function(cleared.flag, forward.starting.flag, cur) {
   con <- ConnectToDB()
-  
+
   data <- tibble::as_tibble(DBI::dbReadTable(con, "pricing_results")) |> 
     dplyr::mutate(spot.date = as.Date(spot.date, format = "%d/%m/%Y")) |>
     dplyr::filter(cleared %in% cleared.flag,
                   forward.starting %in% forward.starting.flag)|> 
-    dplyr::filter(currency %in% cur)
+    dplyr::filter(currency %in% cur,
+                  spot.date >= as.Date("2021-01-01"))
   
   DBI::dbDisconnect(con)
   return(data)
@@ -81,8 +82,7 @@ SummarisePricing <- function(priced.portfolio) {
     dplyr::summarise(notional = sum(notional),
                      pv01 = sum(pv01),
                      .groups = "keep") |> 
-    dplyr::ungroup() |> 
-    dplyr::filter(spot.date >= as.Date("2021-01-01")) 
+    dplyr::ungroup()  
 }
 
 CalculateDerivedMetric <- function(metric, metric.char, histo.rates) {
@@ -173,10 +173,11 @@ PlotHistogram <- function(buckets.distribution, input) {
   
 }
 
-PlotHistoryTrades <- function(priced.portfolio, bucket, input) {
+PlotHistoryTrades <- function(priced.portfolio, bucket, input, dates) {
 
   priced.portfolio <- priced.portfolio |> 
-    dplyr::filter(Bucket %in% bucket) |> 
+    dplyr::filter(Bucket %in% bucket,
+                  spot.date >= as.Date(dates[1]) & spot.date <= as.Date(dates[2])) |> 
     dplyr::arrange(spot.date)
 
   moving.average <- priced.portfolio |> 
@@ -186,8 +187,6 @@ PlotHistoryTrades <- function(priced.portfolio, bucket, input) {
                                   ~ mean(.x, na.rm = TRUE),
                                   .before = 5)) |> 
     dplyr::select(-value)
-  
-  N <- length(unique(data$Bucket))
   
   plot <- plot_ly(priced.portfolio) |>  
     add_bars(x = ~spot.date, y = ~get(input), color = ~Bucket, 
@@ -214,9 +213,11 @@ PlotHistoryTrades <- function(priced.portfolio, bucket, input) {
   
 }
 
-PlotCurve <- function(curve) {
+PlotCurve <- function(curve, dates) {
   if(!is.null(curve)) {
     data <- curve |> 
+      dplyr::filter(curve.date >= as.Date(dates[1]) & 
+                      curve.date <= as.Date(dates[2])) |> 
       dplyr::arrange(curve.date) 
     
     plot <- data |> 
@@ -227,8 +228,8 @@ PlotCurve <- function(curve) {
              yaxis = list(title = "Rate",
                           tickformat= ".3%"),
              xaxis = list(title = "Date",
-                          range = c(min(curve$curve.date) - 1, 
-                                    max(curve$curve.date) + 1),
+                          range = c(min(data$curve.date) - 1,
+                                    max(data$curve.date) + 1),
                           rangebreaks=list(
                             list(bounds=list("sat", "mon")))),
              annotations = 

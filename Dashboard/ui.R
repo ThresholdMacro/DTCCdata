@@ -46,6 +46,12 @@ dashboardPage(
                                multiple = FALSE,
                                choicesOpt = list(
                                  style = rep("color: black;", 2))),
+                   dateRangeInput("date_graphs", "Select the date range:",
+                                  format = "yyyy-mm-dd",
+                                  start = "2021-01-01",
+                                  end = Sys.Date(),
+                                  min = "2021-01-01",
+                                  max = Sys.Date()),
                    conditionalPanel("input.dropdown_rates.length > 0 &&
                                     input.dropdown_tenors.length > 0",
                                     downloadButton("Download",
@@ -79,9 +85,11 @@ dashboardPage(
                        plotlyOutput("histogram")),
                    box(width = "6 col-lg-6",
                        fluidRow(
-                         column(6, dateInput("datepick", "Choose a Date",
-                                             value = as.Date("2021-01-04"),
-                                             min = as.Date("2021-01-04"))),
+                         column(6, dateInput("date_curve", "Select the date range:",
+                                                  format = "yyyy-mm-dd",
+                                                  value = Sys.Date(),
+                                                  min = "2021-01-01",
+                                                  max = Sys.Date()),),
                          column(6, textOutput("accuracy"),
                                 style = "text-align: center; padding:30px;")
                        ),
