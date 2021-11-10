@@ -6,8 +6,8 @@ library(plotly)
 library(glue)
 
 dashboardPage(
-  dashboardHeader(title = "Swap Trading Dashboard",
-                  titleWidth = 300),
+  dashboardHeader(title = "Swap Trading Dashboard - Hedge Analytics Ltd",
+                  titleWidth = 500),
   dashboardSidebar(width = "300px",
                    pickerInput(inputId = "dropdown_currency", 
                                "Choose the currency to visualize",
@@ -36,7 +36,7 @@ dashboardPage(
                                "Choose the buckets to visualize",
                                choices = bucket.options, 
                                options = list(`actions-box` = TRUE),
-                               selected = "10-15",
+                               selected = "7-10",
                                multiple = TRUE,
                                choicesOpt = list(
                                  style = rep("color: black;", 12))),
@@ -45,14 +45,29 @@ dashboardPage(
                                choices = metric.options,
                                multiple = FALSE,
                                choicesOpt = list(
-                                 style = rep("color: black;", 2)))
+                                 style = rep("color: black;", 2))),
+                   dateRangeInput("date_graphs", "Select the date range:",
+                                  format = "yyyy-mm-dd",
+                                  start = "2021-01-01",
+                                  end = Sys.Date(),
+                                  min = "2021-01-01",
+                                  max = Sys.Date()),
+                   conditionalPanel("input.dropdown_rates.length > 0 &&
+                                    input.dropdown_tenors.length > 0",
+                                    downloadButton("Download",
+                                                   "Download the data selected",
+                                                   style = "margin-top:15px;
+                                                   margin-left:45px;"))
   ),
   dashboardBody(
     fluidRow(
       box(
         width = "12 col-lg-12",
         title = "Interest Rate Data",
-        plotlyOutput("RatesGraph")
+        conditionalPanel("input.dropdown_rates.length == 0",
+                         textOutput("error_text")),
+        conditionalPanel("input.dropdown_rates.length > 0",
+                         plotlyOutput("RatesGraph"))
       )),
     fluidRow( 
       tabBox(
@@ -60,16 +75,21 @@ dashboardPage(
         title = "Trade Analysis",
         side = "right",
         tabPanel("Historical Timeseries", 
-                 plotlyOutput("TradesData")),
+                 conditionalPanel("input.dropdown_tenors.length == 0",
+                                  textOutput("error_text_tenor")),
+                 conditionalPanel("input.dropdown_tenors.length > 0",
+                                  plotlyOutput("TradesData"))),
         tabPanel("Daily Data", 
                  fluidRow(
                    box(width = "6 col-lg-6",
                        plotlyOutput("histogram")),
                    box(width = "6 col-lg-6",
                        fluidRow(
-                         column(6, dateInput("datepick", "Choose a Date",
-                                             value = as.Date("2021-01-04"),
-                                             min = as.Date("2021-01-04"))),
+                         column(6, dateInput("date_curve", "Select the date range:",
+                                                  format = "yyyy-mm-dd",
+                                                  value = Sys.Date(),
+                                                  min = "2021-01-01",
+                                                  max = Sys.Date()),),
                          column(6, textOutput("accuracy"),
                                 style = "text-align: center; padding:30px;")
                        ),

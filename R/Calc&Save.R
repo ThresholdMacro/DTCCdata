@@ -13,13 +13,12 @@ RunOneDay <- function(date, currencies, cme.flag) {
     purrr::map(dplyr::bind_rows)
 }
 
-dir <- file.path(here::here("log"), "log.txt")
-lf <- logr::log_open(dir)
-start_date <- "2021-09-07"
-end.date <- "2021-09-08"
+start_date <- "2021-10-11"
+end.date <- "2021-10-11"
 cme.flag <- TRUE
 bizdays <- bizdays::bizseq(start_date, end.date, "weekends")
-currencies <- c("EUR", "USD", "GBP", "JPY")
+currencies <- c("JPY")
+#currencies <- c("EUR", "USD", "GBP")
 
 results <- purrr::map(bizdays, ~RunOneDay(.x, currencies, cme.flag)) 
 
@@ -28,7 +27,6 @@ results.compact <- results |>
   purrr::map(dplyr::bind_rows) |> 
   purrr::map(dplyr::distinct)
 
-logr::log_close()
 
 message("*** Connecting to the DB ***")
 
@@ -51,9 +49,9 @@ DBI::dbWriteTable(con, 'accuracy', results.compact$accuracy, append = TRUE,
                   row.names = FALSE)
 message("*** Writing DTCC data ***")
 DBI::dbWriteTable(con, 'dtcc_data', dplyr::select(results.compact$original.data.dtcc,
-                                                  -`Collateralization Type`), 
+                                                  -`Collateralization Type`),
                   append = TRUE, row.names = FALSE)
-# DBI::dbWriteTable(con, 'dtcc_data', results.compact$original.data.dtcc, 
+# DBI::dbWriteTable(con, 'dtcc_data', results.compact$original.data.dtcc,
 #                   append = TRUE, row.names = FALSE)
 message("*** Writing CME data ***")
 DBI::dbWriteTable(con, 'cme_data', results.compact$original.data.cme, append = TRUE,

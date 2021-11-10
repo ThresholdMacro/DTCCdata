@@ -1,9 +1,8 @@
-source(here::here("R/Bootstrap.R"))
-source(here::here("R/DataIngestion.R"))
+source("/home/threshold/DTCCdata/R/Bootstrap.R")
+source("/home/threshold/DTCCdata/R/DataIngestion.R")
 library(ggplot2)
 
 `%notin%` <- Negate(`%in%`)
-
 RunOneDay <- function(date, currencies, cme.flag) {
   
   purrr::map(currencies, 
@@ -15,7 +14,6 @@ RunOneDay <- function(date, currencies, cme.flag) {
 }
 
 SwapsTRAnalysis <- function(date, currency, cme.flag) {
-
   message(glue::glue("*** Analysing Day {date} and currency {currency} ***"))
   
   original.data.dtcc <- DownloadFromDTCC(date) |> 
@@ -28,6 +26,11 @@ SwapsTRAnalysis <- function(date, currency, cme.flag) {
       dplyr::distinct()
     
     cme.swaps <- SwapsFromCME(date, currency)
+    
+    if (nrow(cme.swaps) == 0) {
+      original.data.cme <- NULL
+      cme.swaps <- NULL
+    }
   } else {
     original.data.cme <- NULL
     cme.swaps <- NULL
@@ -59,7 +62,7 @@ SwapsTRAnalysis <- function(date, currency, cme.flag) {
       
       message("*** Outlier Detection ***")
 
-      if (nrow(row.test) > 1) {
+      if (nrow(row.test) > 1 && length(unique(swap.curve$Bucket)) > 1) {
         outlier <- swap.curve |> 
           dplyr::select(time.to.mat, strike) |> 
           outForest::outForest() |> 

@@ -1,6 +1,6 @@
 library(RMySQL)
 library(glue)
-source(here::here("R/Routine.R"))
+source("/home/threshold/DTCCdata/R/Routine.R")
 
 ConnectToDB <- function(){
   db_user <- Sys.getenv("user")
@@ -21,7 +21,9 @@ query <- glue("SELECT * FROM `pricing_results` WHERE `spot.date` = \\
               {as.character(report.date, format = '%m')}/\\
               {as.character(report.date, format = '%Y')}'")
 
-test.previous.upload <- ConnectToDB() |> 
+con <- ConnectToDB()
+
+test.previous.upload <- con |> 
   DBI::dbGetQuery(query) |> 
   nrow()
 
