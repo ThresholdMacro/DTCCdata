@@ -29,7 +29,7 @@ test.previous.upload <- con |>
 
 if (test.previous.upload == 0) {
   currencies <- c("EUR", "USD", "GBP", "JPY")
-  results <- RunOneDay(report.date, currencies, TRUE) 
+  results <- RunOneDay(report.date, currencies, TRUE, TRUE, FALSE) 
   
   message("*** Writing Results ***")
   DBI::dbWriteTable(con, 'pricing_results', results$results, append = TRUE,

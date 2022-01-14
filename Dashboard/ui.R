@@ -9,6 +9,14 @@ dashboardPage(
   dashboardHeader(title = "Swap Trading Dashboard - Hedge Analytics Ltd",
                   titleWidth = 500),
   dashboardSidebar(width = "300px",
+                   checkboxGroupButtons(inputId = "TypeSelector",
+                                        label = "Choose the type of swaps to include",
+                                        choices = c("Libor", "OIS"),
+                                        justified = TRUE,
+                                        selected = c("Libor", "OIS"),
+                                        checkIcon = list(
+                                          yes = icon("ok", 
+                                                     lib = "glyphicon"))),
                    pickerInput(inputId = "dropdown_currency", 
                                "Choose the currency to visualize",
                                choices = currency.options, 
@@ -64,9 +72,9 @@ dashboardPage(
       box(
         width = "12 col-lg-12",
         title = "Interest Rate Data",
-        conditionalPanel("input.dropdown_rates.length == 0",
+        conditionalPanel("input.dropdown_rates.length == 0 || input.TypeSelector.length == 0",
                          textOutput("error_text")),
-        conditionalPanel("input.dropdown_rates.length > 0",
+        conditionalPanel("input.dropdown_rates.length > 0 && input.TypeSelector.length > 0",
                          plotlyOutput("RatesGraph"))
       )),
     fluidRow( 
@@ -75,21 +83,30 @@ dashboardPage(
         title = "Trade Analysis",
         side = "right",
         tabPanel("Historical Timeseries", 
-                 conditionalPanel("input.dropdown_tenors.length == 0",
+                 conditionalPanel("input.dropdown_tenors.length == 0 || input.TypeSelector.length == 0",
                                   textOutput("error_text_tenor")),
-                 conditionalPanel("input.dropdown_tenors.length > 0",
+                 conditionalPanel("input.dropdown_tenors.length > 0 && input.TypeSelector.length > 0",
                                   plotlyOutput("TradesData"))),
-        tabPanel("Daily Data", 
+        tabPanel("Daily Data",
+                 fluidRow(
+                   column(width = 12, align = 'center',
+                          pickerInput(
+                            inputId = "OISSelector",
+                            label = "Choose the type of swap", 
+                            choices = c("Libor", "OIS"),
+                            selected = "Libor"
+                          ))
+                 ),
                  fluidRow(
                    box(width = "6 col-lg-6",
                        plotlyOutput("histogram")),
                    box(width = "6 col-lg-6",
                        fluidRow(
                          column(6, dateInput("date_curve", "Select the date range:",
-                                                  format = "yyyy-mm-dd",
-                                                  value = Sys.Date(),
-                                                  min = "2021-01-01",
-                                                  max = Sys.Date()),),
+                                             format = "yyyy-mm-dd",
+                                             value = Sys.Date(),
+                                             min = "2021-01-01",
+                                             max = Sys.Date()),),
                          column(6, textOutput("accuracy"),
                                 style = "text-align: center; padding:30px;")
                        ),

@@ -16,6 +16,14 @@ shinyServer(function(input, output, session) {
   
   # Reactive elements -------------------------------------------------------
   
+  ois.flag <- reactive({
+    ifelse(input$TypeSelector %in% "OIS", TRUE, FALSE) 
+  })
+  
+  ois.flag.daily <- reactive({
+    ifelse(input$OISSelector %in% "OIS", TRUE, FALSE) 
+  })
+  
   cleared.flag <- reactive({
     1 |> 
       union(ifelse(input$OnOffExchange, 1, 0)) |> 
@@ -29,15 +37,25 @@ shinyServer(function(input, output, session) {
   })
   
   pricing <- reactive({
-    GetPricing(cleared.flag(), forward.starting.flag(), input$dropdown_currency)
+    GetPricingCombined(cleared.flag(), forward.starting.flag(), 
+                       input$dropdown_currency, input$TypeSelector)
   })  
+  
+  pricing.unique <- reactive({
+    GetPricing(cleared.flag(), forward.starting.flag(), 
+               input$dropdown_currency, ois.flag.daily())
+  })
   
   pricing.filter <- reactive({
     SummarisePricing(pricing())
   })
   
+  pricing.filter.unique <- reactive({
+    SummarisePricing(pricing.unique())
+  })
+  
   curve <- reactive({
-    GetCurve(input$dropdown_currency) 
+    GetCurveCombined(input$dropdown_currency, input$TypeSelector) 
   })  
   
   selected.rates <- reactive({
@@ -45,19 +63,20 @@ shinyServer(function(input, output, session) {
   })
   
   buckets.distribution <- reactive({
-    GetBucketDistribution(pricing.filter(), input$datepick, 
-                          bucket.options)
+    GetBucketDistribution(pricing.filter.unique(), input$datepick, 
+                          bucket.options, input$OISSelector)
   }) 
   
   accuracy <- reactive({
-    GetAccuracy(input$date_curve, input$dropdown_currency)
+    GetAccuracy(input$date_curve, input$dropdown_currency, ois.flag.daily())
   })
   
   histogram <- reactive({PlotHistogram(buckets.distribution(), 
                                        input$dropdown_type)})
   
   trades <- reactive({
-    PlotTradesAndCurve(pricing(), curve(), input$date_curve)
+    PlotTradesAndCurve(pricing.unique(), curve(), input$date_curve,
+                       input$OISSelector)
   })
   
   plotcurve <- reactive({
