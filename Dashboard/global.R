@@ -275,12 +275,24 @@ PlotHistoryTrades <- function(priced.portfolio, bucket, input, dates) {
     dplyr::group_by(spot.date) |> 
     dplyr::summarise(ma = sum(ma)) 
   
-  plot <- plot_ly(priced.portfolio) |>  
-    add_bars(x = ~spot.date, y = ~get(input), 
-             color = ~swap.type, opacity =0.2) |> 
+  plot <- plot_ly(priced.portfolio)
+  
+  if (length(unique(priced.portfolio$swap.type)) == 1) {
+    text.legend <- "Duration Bucket"
+    plot <- plot |> 
+      add_bars(x = ~spot.date, y = ~get(input), 
+               color = ~Bucket, opacity = 0.2) 
+  } else {
+    text.legend <- "Swap Type"
+    plot <- plot |> 
+      add_bars(x = ~spot.date, y = ~get(input), 
+               color = ~swap.type, opacity =0.2) 
+  }
+  
+  plot <- plot |> 
     add_lines(data = moving.average, x = ~spot.date, y = ~ma,
               showlegend = FALSE) |> 
-    layout(legend = list(title = list(text = "Duration Bucket"),
+    layout(legend = list(title = list(text = text.legend),
                          orientation = 'h'),
            yaxis = list(title = paste0(stringr::str_to_sentence(input), 
                                        " Traded")),

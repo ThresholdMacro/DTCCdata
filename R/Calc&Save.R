@@ -3,34 +3,33 @@ source(here::here("R/Routine.R"))
 
 # This routine was used to populate historical data 
 
-con <-  RMySQL::dbConnect(RMySQL::MySQL(), user = Sys.getenv("user"),
-                          password = Sys.getenv("password"),
-                          dbname = Sys.getenv("dbname"),
-                          host = 'localhost', port = 3306)
+# con <-  RMySQL::dbConnect(RMySQL::MySQL(), user = Sys.getenv("user"),
+#                           password = Sys.getenv("password"),
+#                           dbname = Sys.getenv("dbname"),
+#                           host = 'localhost', port = 3306)
+# 
+# query <- "SELECT date FROM accuracy"
+# 
+# dates <- DBI::dbGetQuery(con, query) |> 
+#   dplyr::pull(date) |> 
+#   unique()
+# 
+# dbListConnections( dbDriver( drv = "MySQL")) |>
+#   lapply(dbDisconnect)
+start_date <- "2022-01-03"
+end.date <- "2022-01-06"
+bizdays <- bizdays::bizseq(start_date, end.date, "weekends")
 
-query <- "SELECT date FROM accuracy"
-
-dates <- DBI::dbGetQuery(con, query) |> 
-  dplyr::pull(date) |> 
-  unique()
-
-dbListConnections( dbDriver( drv = "MySQL")) |>
-  lapply(dbDisconnect)
-# start_date <- "2021-12-27"
-# end.date <- "2022-01-06"
-
-for (date in dates[2:length(dates)]) {
+for (date in bizdays) {
   con <-  RMySQL::dbConnect(RMySQL::MySQL(), user = Sys.getenv("user"),
                             password = Sys.getenv("password"),
                             dbname = Sys.getenv("dbname"),
                             host = 'localhost', port = 3306)
   
   cme.flag <- FALSE
-  # bizdays <- bizdays::bizseq(start_date, end.date, "weekends")
   currencies <- c("EUR", "USD", "GBP", "JPY")
-  # currencies <- c("GBP","JPY")
   
-  results <- RunOneDay(as.Date(date), currencies, cme.flag, libor.flag = FALSE,
+  results <- RunOneDay(date, currencies, cme.flag, libor.flag = FALSE,
                        ois.flag = TRUE)
   
   # results <- purrr::map(bizdays, ~RunOneDay(.x, currencies, cme.flag, 
@@ -45,7 +44,26 @@ for (date in dates[2:length(dates)]) {
   
   message("*** Connecting to the DB ***")
   
-  message("*** Writing Results ***")
+  # message("*** Writing Results ***")
+  # DBI::dbWriteTable(con, 'pricing_results', 
+  #                   results$pricing.data$results$Libor, append = TRUE,
+  #                   row.names = FALSE)
+  # message("*** Writing Outliers ***")
+  # DBI::dbWriteTable(con, 'outliers_removed', 
+  #                   results$pricing.data$outliers.removed$Libor, append = TRUE,
+  #                   row.names = FALSE)
+  # message("*** Writing Curve ***")
+  # DBI::dbWriteTable(con, 'pricing_curve', 
+  #                   results$pricing.data$swap.curve$Libor, append = TRUE,
+  #                   row.names = FALSE)
+  # message("*** Writing Accuracy ***")
+  # DBI::dbWriteTable(con, 'accuracy', 
+  #                   results$pricing.data$accuracy$Libor, append = TRUE,
+  #                   row.names = FALSE)
+  # message("*** Writing DTCC data ***")
+  # DBI::dbWriteTable(con, 'dtcc_data', dplyr::select(results.compact$original.data.dtcc,
+  #                                                   -`Collateralization Type`), 
+  #                   append = TRUE, row.names = FALSE)
   DBI::dbWriteTable(con, 'pricing_results_ois', 
                     results$pricing.data$results$OIS, append = TRUE,
                     row.names = FALSE)
