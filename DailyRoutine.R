@@ -29,7 +29,7 @@ test.previous.upload <- con |>
 
 if (test.previous.upload == 0) {
   currencies <- c("EUR", "USD", "GBP", "JPY")
-  results <- RunOneDay(report.date, currencies, cme.flag = TRUE, 
+  results <- RunOneDay(report.date, currencies, cme.flag = FALSE, 
                        libor.flag = FALSE, ois.flag = FALSE) 
   
   message("*** Writing Results ***")
@@ -49,7 +49,7 @@ if (test.previous.upload == 0) {
                     results$pricing.data$accuracy$Libor, append = TRUE,
                     row.names = FALSE)
   message("*** Writing DTCC data ***")
-  DBI::dbWriteTable(con, 'dtcc_data', dplyr::select(results.compact$original.data.dtcc,
+  DBI::dbWriteTable(con, 'dtcc_data', dplyr::select(results$original.data.dtcc,
                                                     -`Collateralization Type`), 
                     append = TRUE, row.names = FALSE)
   # message("*** Writing CME data ***")
@@ -76,5 +76,6 @@ if (test.previous.upload == 0) {
     lapply(dbDisconnect)
 } else {
   message("*** No New Data Available ***")
-  
+  dbListConnections( dbDriver( drv = "MySQL")) |>
+    lapply(dbDisconnect)
 }

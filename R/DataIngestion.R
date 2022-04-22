@@ -204,7 +204,11 @@ SwapsFromDTCC <- function(dates, currency, libor.flag = FALSE,
     dplyr::mutate(data = purrr::pmap(list(a = data, b = dcc, c = `Product ID`),
                                      function(a, b, c) FilterSwaps(a, b, c,
                                                                    report.date,
-                                                                   ois.rate)))
+                                                                   ois.rate)),
+                  product = dplyr::case_when(
+                    stringr::str_detect(`Product ID`, "OIS") ~ "OIS",
+                    TRUE ~ "Libor"
+                  ))
 
   if (libor.flag) {
     swaps <- swaps |> 

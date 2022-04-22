@@ -313,12 +313,13 @@ PlotHistoryTrades <- function(priced.portfolio, bucket, input, dates) {
 }
 
 PlotCurve <- function(curve, dates) {
-  
+  browser()
   if(!is.null(curve)) {
     data <- curve |> 
       dplyr::filter(curve.date >= as.Date(dates[1]) & 
                       curve.date <= as.Date(dates[2])) |> 
-      dplyr::arrange(curve.date) 
+      dplyr::arrange(curve.date) |> 
+      dplyr::arrange(swap.type)
     
     plot <- data |> 
       plot_ly(type = "scatter", mode = "lines+markers") |>  

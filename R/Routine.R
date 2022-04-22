@@ -13,9 +13,15 @@ CreateList <- function(data, ois.flag, libor.flag) {
   return(res)
 }
 
+RemoveNULLAndTranspose <- function(item) {
+  item[!purrr::map_lgl(item, is.null)] |> 
+    purrr::transpose()
+}
+
+
 RunOneDay <- function(date, currencies, cme.flag, libor.flag = FALSE, 
                       ois.flag = FALSE) {
-  
+
   res <- purrr::map(currencies, 
              ~SwapsTRAnalysis(as.Date(date, origin = "1970-01-01"), .x,
                               cme.flag, libor.flag, ois.flag)) |> 
@@ -30,10 +36,14 @@ RunOneDay <- function(date, currencies, cme.flag, libor.flag = FALSE,
   } else {
     res$pricing.data <- res$pricing.data |> 
       purrr::transpose() |> 
-      purrr::map(purrr::transpose) |> 
+      purrr::map(RemoveNULLAndTranspose) |> 
       purrr::map(~purrr::map(.x, dplyr::bind_rows)) |> 
       purrr::transpose()
   }
+  
+  res$original.data.dtcc <- res$original.data.dtcc |> 
+    purrr::reduce(dplyr::bind_rows) |> 
+    dplyr::distinct()
   
   return(res)
 }
@@ -204,9 +214,11 @@ SwapsTRAnalysis <- function(date, currency, cme.flag, libor.flag = FALSE,
       results <- list(results = NULL, outliers.removed = NULL, 
                       swap.curve = NULL, accuracy = NULL)
     } else {
+      names <- dplyr::pull(swaps.portfolio, product)
+      
       results <- purrr::map(swaps.portfolio$data, ~PricingProcedure(.x, currency, 
                                                                     date)) |> 
-        purrr::set_names(c("Libor", "OIS"))
+        purrr::set_names(names)
     }
   }
   

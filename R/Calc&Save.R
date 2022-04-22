@@ -16,8 +16,8 @@ source(here::here("R/Routine.R"))
 # 
 # dbListConnections( dbDriver( drv = "MySQL")) |>
 #   lapply(dbDisconnect)
-start_date <- "2022-01-03"
-end.date <- "2022-01-06"
+start_date <- "2022-04-12"
+end.date <- "2022-04-12"
 bizdays <- bizdays::bizseq(start_date, end.date, "weekends")
 
 for (date in bizdays) {
@@ -28,10 +28,11 @@ for (date in bizdays) {
   
   cme.flag <- FALSE
   currencies <- c("EUR", "USD", "GBP", "JPY")
+  # currencies <- "EUR"
   
   results <- RunOneDay(date, currencies, cme.flag, libor.flag = FALSE,
-                       ois.flag = TRUE)
-  
+                       ois.flag = FALSE)
+
   # results <- purrr::map(bizdays, ~RunOneDay(.x, currencies, cme.flag, 
   #                                           libor.flag = FALSE,
   #                                           ois.flag = TRUE)) 
@@ -45,25 +46,25 @@ for (date in bizdays) {
   message("*** Connecting to the DB ***")
   
   # message("*** Writing Results ***")
-  # DBI::dbWriteTable(con, 'pricing_results', 
-  #                   results$pricing.data$results$Libor, append = TRUE,
-  #                   row.names = FALSE)
-  # message("*** Writing Outliers ***")
-  # DBI::dbWriteTable(con, 'outliers_removed', 
-  #                   results$pricing.data$outliers.removed$Libor, append = TRUE,
-  #                   row.names = FALSE)
-  # message("*** Writing Curve ***")
-  # DBI::dbWriteTable(con, 'pricing_curve', 
-  #                   results$pricing.data$swap.curve$Libor, append = TRUE,
-  #                   row.names = FALSE)
-  # message("*** Writing Accuracy ***")
-  # DBI::dbWriteTable(con, 'accuracy', 
-  #                   results$pricing.data$accuracy$Libor, append = TRUE,
-  #                   row.names = FALSE)
-  # message("*** Writing DTCC data ***")
-  # DBI::dbWriteTable(con, 'dtcc_data', dplyr::select(results.compact$original.data.dtcc,
-  #                                                   -`Collateralization Type`), 
-  #                   append = TRUE, row.names = FALSE)
+  DBI::dbWriteTable(con, 'pricing_results',
+                    results$pricing.data$results$Libor, append = TRUE,
+                    row.names = FALSE)
+  message("*** Writing Outliers ***")
+  DBI::dbWriteTable(con, 'outliers_removed',
+                    results$pricing.data$outliers.removed$Libor, append = TRUE,
+                    row.names = FALSE)
+  message("*** Writing Curve ***")
+  DBI::dbWriteTable(con, 'pricing_curve',
+                    results$pricing.data$swap.curve$Libor, append = TRUE,
+                    row.names = FALSE)
+  message("*** Writing Accuracy ***")
+  DBI::dbWriteTable(con, 'accuracy',
+                    results$pricing.data$accuracy$Libor, append = TRUE,
+                    row.names = FALSE)
+  message("*** Writing DTCC data ***")
+  DBI::dbWriteTable(con, 'dtcc_data', dplyr::select(results$original.data.dtcc,
+                                                    -`Collateralization Type`),
+                    append = TRUE, row.names = FALSE)
   DBI::dbWriteTable(con, 'pricing_results_ois', 
                     results$pricing.data$results$OIS, append = TRUE,
                     row.names = FALSE)
