@@ -1,0 +1,134 @@
+---
+title: "Analysis of Swaptions"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+source(here::here("R/DataIngestion.R"))
+```
+
+## High level analysis of data from DTCC
+
+```{r Download of data from DTCC}
+start_date <- "2022-03-01"
+end.date <- "2022-03-31"
+bizdays <- bizdays::bizseq(start_date, end.date, "weekends")
+data <- DownloadFromDTCC(bizdays)
+```
+
+```{r Filter on Swaptions}
+swaptions <- data |> 
+  dplyr::filter(grepl("Swaption", `Product ID`))
+
+n.total <- nrow(swaptions)
+```
+
+The number of swaptions contracts traded in March was `r nrow(swaptions)` representing `r nrow(swaptions)/nrow(data)` of all the trades reported to DTCC.
+
+The following table distinguishese between NEW, CANCEL and CORRECT trades
+
+```{r Table on type of Actions}
+swaptions |> 
+  dplyr::count(Action)
+```
+
+Let's focus only on the new ones and see the different trade types
+
+```{r Table on Transaction Type}
+swaptions <- swaptions |> 
+  dplyr::filter(grepl("NEW", Action))
+
+swaptions |> 
+  dplyr::count(`Transaction Type`)
+```
+
+```{r Filter on Transaction Type, echo=FALSE}
+swaptions <- swaptions |> 
+  dplyr::filter(grepl("Trade", `Transaction Type`))
+```
+
+
+Hence, out of `r n.total` contracts, only `r nrow(swaptions)` are actual new trades. 
+We can now analyse the currencies of the new trades:
+
+```{r Table on Currency}
+swaptions |> 
+  dplyr::count(`Notional Currency 1`) |> 
+  dplyr::arrange(dplyr::desc(n))
+```
+
+```{r Filter on USD, echo=FALSE}
+swaptions <- swaptions |> 
+  dplyr::filter(grepl("USD", `Notional Currency 1`))
+```
+
+
+## Analysis uf USD Swaptions
+
+Let's first analyse the style of the American USD swaptions traded in March:
+
+```{r Option Style}
+swaptions |> 
+  dplyr::count(`Option Style`)
+```
+The vast majority is European with a few Bermudan ones.
+
+The type of the swaption (Call/Put) should be in the field *Option Type* but that field is intelligible as it is reported:
+
+```{r Option Type}
+swaptions |> 
+  dplyr::count(`Option Type`)
+```
+
+**We can possibly try and contact DTCC to get the information on what these acronyms mean?**
+
+Let's now look at the maturities and tenors using the agreed convention
+
+```{r Mapping on time dimensions}
+trades.cube <- swaptions |> 
+  dplyr::mutate(
+    Maturity = round(as.numeric((`Effective Date` - `Event Timestamp`)/365),0),
+    Tenor = round(as.numeric((`Expiration Date` - `Effective Date`)/365),0)) |>
+  dplyr::group_by(Maturity, Tenor) |> 
+  dplyr::summarise(Notional = sum(`Notional Amount 1`),
+                   Trades = dplyr::n())  
+
+trades.cube |> 
+  ggplot(aes(x = Maturity, y = Tenor)) + 
+  geom_tile(aes(fill = Trades), colour = "white")
+```
+Two considerations:
+
+- a 120+ years Maturity contract looks like an error/outlier we can remove
+- a negative maturity swaption doesn't look reasonable
+- all the contracts with Maturity = 0 have a maturity which is less than 6 months
+
+Let's remove the outlier and zoom on the 1-20 years maturity range. The number in the tile represents the number of trades for that specific pair of maturity and tenor.
+
+```{r Filtered mapping on time dimensions}
+trades.cube |> 
+  dplyr::filter(Maturity <= 20, Maturity >= 0, Tenor >= 0) |> 
+  ggplot(aes(x = Maturity, y = Tenor)) + 
+  geom_tile(aes(fill = Trades), colour = "white") +
+  geom_text(aes(label = Trades), size = 2, colour = "white") + 
+  theme_minimal() + 
+  theme(legend.position="none")
+```
+
+We can notice some clusters of trades, but we can further focus on the points on the cube that have at least 20 trades performed in March.
+
+```{r Filtered mapping on time dimensions more 20 trades}
+trades.cube |> 
+  dplyr::filter(Maturity <= 20, Maturity >= 0, Tenor >= 0, Trades > 20) |> 
+  ggplot(aes(x = Maturity, y = Tenor)) + 
+  geom_tile(aes(fill = Trades), colour = "white") +
+  geom_text(aes(label = Trades), size = 2, colour = "white") + 
+  theme_minimal() + 
+  theme(legend.position="none")
+```
+So most of the trades:
+
+  - Have a maturity lower than 5 years, 7 or 10 years
+  - Have tenors mostly below 10 years or 20 and 30 years

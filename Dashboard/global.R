@@ -35,25 +35,36 @@ ConnectToDB <- function(){
 
 
 
-GetPricing <- function(cleared.flag, forward.starting.flag, cur) {
-  con <- ConnectToDB()
+GetPricing <- function(cleared.flag, forward.starting.flag, cur, ois.flag) {
+  table.name <- ifelse(ois.flag, "pricing_results_ois", "pricing_results")
 
-  data <- tibble::as_tibble(DBI::dbReadTable(con, "pricing_results")) |> 
+  if (length(cleared.flag) == 1) {
+    query <- glue::glue("SELECT * FROM {table.name} \\
+                         WHERE currency = '{cur}' \\
+                         AND cleared = True")
+  } else {
+    query <- glue::glue("SELECT * FROM {table.name} \\
+                         WHERE currency = '{cur}'")
+  }
+  
+  con <- ConnectToDB()
+  
+  data <- DBI::dbGetQuery(con, query) |> 
+    dplyr::filter(forward.starting %in% forward.starting.flag)|> 
     dplyr::mutate(spot.date = as.Date(spot.date, format = "%d/%m/%Y")) |>
-    dplyr::filter(cleared %in% cleared.flag,
-                  forward.starting %in% forward.starting.flag)|> 
-    dplyr::filter(currency %in% cur,
-                  spot.date >= as.Date("2021-01-01"))
+    dplyr::filter(spot.date >= as.Date("2021-01-01"))
   
   DBI::dbDisconnect(con)
   return(data)
 }
 
 
-GetAccuracy <- function(chosen.date, cur) {
+GetAccuracy <- function(chosen.date, cur, ois.flag) {
+  table.name <- ifelse(ois.flag, "accuracy_ois", "accuracy")
+  
   con <- ConnectToDB()
   
-  data <- tibble::as_tibble(DBI::dbReadTable(con, "accuracy")) |> 
+  data <- tibble::as_tibble(DBI::dbReadTable(con, table.name)) |> 
     dplyr::mutate(date = as.Date(date)) |>
     dplyr::filter(currency %in% cur,
                   date %in% chosen.date) |> 
@@ -63,11 +74,16 @@ GetAccuracy <- function(chosen.date, cur) {
   return(data)
 }
 
-GetCurve <- function(cur) {
+GetCurve <- function(cur, ois.flag) {
+  
+  table.name <- ifelse(ois.flag, "pricing_curve_ois", "pricing_curve")
+  
+  query <- glue::glue("SELECT * FROM {table.name} \\
+                      WHERE currency = '{cur}'")
+  
   con <- ConnectToDB()
-  data <- tibble::as_tibble(DBI::dbReadTable(con, "pricing_curve")) |> 
-    dplyr::mutate(curve.date = as.Date(curve.date)) |> 
-    dplyr::filter(currency %in% cur) 
+  data <- DBI::dbGetQuery(con, query) |> 
+    dplyr::mutate(curve.date = as.Date(curve.date)) 
   
   DBI::dbDisconnect(con)
   return(data)
@@ -76,9 +92,63 @@ GetCurve <- function(cur) {
 
 # Calculation Functions ---------------------------------------------------------------
 
+GetPricingCombined <- function(cleared.flag, forward.starting.flag, cur,
+                               type.selector) {
+  libor.flag <- ifelse(any(type.selector %in% "Libor"), TRUE, FALSE) 
+  ois.flag <- ifelse(any(type.selector %in% "OIS"), TRUE, FALSE) 
+  
+  if (libor.flag) {
+    pricing.libor <- GetPricing(cleared.flag, forward.starting.flag, cur, FALSE) |> 
+      dplyr::mutate(swap.type = "Libor")
+  } else {
+    pricing.libor <- NULL
+  }
+  
+  if (ois.flag) {
+    pricing.ois <- GetPricing(cleared.flag, forward.starting.flag, cur, TRUE) |> 
+      dplyr::mutate(swap.type = "OIS")
+  } else {
+    pricing.ois <- NULL
+  }
+  
+  pricing <- dplyr::bind_rows(pricing.libor, pricing.ois)
+  
+  return(pricing)
+}
+
+GetCurveCombined <- function(cur, type.selector) {
+  libor.flag <- ifelse(any(type.selector %in% "Libor"), TRUE, FALSE) 
+  ois.flag <- ifelse(any(type.selector %in% "OIS"), TRUE, FALSE) 
+  
+  if (libor.flag) {
+    pricing.libor <- GetCurve(cur, FALSE) |> 
+      dplyr::mutate(swap.type = "Libor")
+  } else {
+    pricing.libor <- NULL
+  }
+  
+  if (ois.flag) {
+    pricing.ois <- GetCurve(cur, TRUE) |> 
+      dplyr::mutate(swap.type = "OIS")
+  } else {
+    pricing.ois <- NULL
+  }
+  
+  pricing <- dplyr::bind_rows(pricing.libor, pricing.ois)
+  
+  return(pricing)
+}
+
 SummarisePricing <- function(priced.portfolio) {
+  
+  if (any(colnames(priced.portfolio) %in% "swap.type")) {
+    priced.portfolio<- priced.portfolio  |> 
+      dplyr::group_by(swap.type, spot.date, currency, Bucket)
+  } else{
+    priced.portfolio<- priced.portfolio  |> 
+      dplyr::group_by(spot.date, currency, Bucket)
+  }
   priced.portfolio  |> 
-    dplyr::group_by(spot.date, currency, Bucket) |>  
     dplyr::summarise(notional = sum(notional),
                      pv01 = sum(pv01),
                      .groups = "keep") |> 
@@ -105,7 +175,7 @@ CalculateDerivedMetric <- function(metric, metric.char, histo.rates) {
         dplyr::mutate(x, rate = x[[glue("Rate_{y[3]}")]] - 2*x[[glue("Rate_{y[2]}")]] + x[[glue("Rate_{y[1]}")]])
       }
     }}(rates) |>  
-    dplyr::select(curve.date, metric, rate)
+    dplyr::select(swap.type, curve.date, metric, rate)
   
   return(histo.rates)
 }
@@ -136,8 +206,7 @@ FillBuckets <- function(priced.portfolio, bucket.options) {
 
 
 GetBucketDistribution <- function(priced.portfolio, date, 
-                                  bucket.options) {
-  
+                                  bucket.options, OISSelector) {
   bucketed.results <- priced.portfolio |> 
     dplyr::group_nest(spot.date) |> 
     dplyr::mutate(bucketed.results = purrr::map(data, FillBuckets, 
@@ -173,27 +242,57 @@ PlotHistogram <- function(buckets.distribution, input) {
   
 }
 
-PlotHistoryTrades <- function(priced.portfolio, bucket, input, dates) {
+CalculateMovingAverage <- function(data){
+  data |> 
+    dplyr::mutate(ma = slider::slide_index_dbl(value, 
+                                               spot.date,
+                                               ~mean(.x, na.rm = TRUE),
+                                               .before = 5)) |> 
+    dplyr::select(-value)
+}
 
+PlotHistoryTrades <- function(priced.portfolio, bucket, input, dates) {
+  
   priced.portfolio <- priced.portfolio |> 
     dplyr::filter(Bucket %in% bucket,
                   spot.date >= as.Date(dates[1]) & spot.date <= as.Date(dates[2])) |> 
     dplyr::arrange(spot.date)
-
-  moving.average <- priced.portfolio |> 
-    dplyr::group_by(spot.date) |> 
-    dplyr::summarise(value = sum(!!sym(input))) |> 
-    mutate(ma = slider::slide_dbl(value, 
-                                  ~ mean(.x, na.rm = TRUE),
-                                  .before = 5)) |> 
-    dplyr::select(-value)
   
-  plot <- plot_ly(priced.portfolio) |>  
-    add_bars(x = ~spot.date, y = ~get(input), color = ~Bucket, 
-             opacity = 0.2) |> 
+  libor.portfolio <- priced.portfolio |> 
+    dplyr::filter(grepl("Libor", swap.type))
+  
+  ois.portfolio <- priced.portfolio |> 
+    dplyr::filter(grepl("OIS", swap.type))
+  
+  moving.average <- priced.portfolio |> 
+    dplyr::group_by(spot.date, swap.type) |> 
+    dplyr::summarise(value = sum(!!sym(input))) |> 
+    dplyr::ungroup() |> 
+    dplyr::group_nest(swap.type) |> 
+    dplyr::mutate(ma = purrr::map(data, CalculateMovingAverage)) |> 
+    dplyr::select(-data) |> 
+    tidyr::unnest() |> 
+    dplyr::group_by(spot.date) |> 
+    dplyr::summarise(ma = sum(ma)) 
+  
+  plot <- plot_ly(priced.portfolio)
+  
+  if (length(unique(priced.portfolio$swap.type)) == 1) {
+    text.legend <- "Duration Bucket"
+    plot <- plot |> 
+      add_bars(x = ~spot.date, y = ~get(input), 
+               color = ~Bucket, opacity = 0.2) 
+  } else {
+    text.legend <- "Swap Type"
+    plot <- plot |> 
+      add_bars(x = ~spot.date, y = ~get(input), 
+               color = ~swap.type, opacity =0.2) 
+  }
+  
+  plot <- plot |> 
     add_lines(data = moving.average, x = ~spot.date, y = ~ma,
               showlegend = FALSE) |> 
-    layout(legend = list(title = list(text = "Duration Bucket"),
+    layout(legend = list(title = list(text = text.legend),
                          orientation = 'h'),
            yaxis = list(title = paste0(stringr::str_to_sentence(input), 
                                        " Traded")),
@@ -214,15 +313,18 @@ PlotHistoryTrades <- function(priced.portfolio, bucket, input, dates) {
 }
 
 PlotCurve <- function(curve, dates) {
+  browser()
   if(!is.null(curve)) {
     data <- curve |> 
       dplyr::filter(curve.date >= as.Date(dates[1]) & 
                       curve.date <= as.Date(dates[2])) |> 
-      dplyr::arrange(curve.date) 
+      dplyr::arrange(curve.date) |> 
+      dplyr::arrange(swap.type)
     
     plot <- data |> 
       plot_ly(type = "scatter", mode = "lines+markers") |>  
-      add_trace(x = ~curve.date, y = ~rate, color = ~metric) |> 
+      add_trace(x = ~curve.date, y = ~rate, color = ~metric,
+                linetype = ~swap.type) |> 
       layout(legend = list(title = list(text = "Interest Rate"),
                            orientation = 'h'),
              yaxis = list(title = "Rate",
@@ -241,10 +343,11 @@ PlotCurve <- function(curve, dates) {
   } 
 }
 
-PlotTradesAndCurve <- function(priced.portfolio, curve, date) {
+PlotTradesAndCurve <- function(priced.portfolio, curve, date, ois.selector) {
   
   curve <- curve |> 
-    dplyr::filter(curve.date %in% date)
+    dplyr::filter(curve.date %in% date,
+                  swap.type %in% ois.selector)
   
   data <- priced.portfolio |> 
     dplyr::filter(spot.date %in% date) |> 
@@ -254,7 +357,7 @@ PlotTradesAndCurve <- function(priced.portfolio, curve, date) {
       outlier == 1 ~ "Outlier removed", 
       cleared == 1 & forward.starting == 0 ~ "Cleared and spot starting", 
       TRUE ~ "Non cleared and/or forward starting" )) 
-
+  
   plot <- data |> 
     plot_ly(type = "scatter", mode = "markers") |> 
     add_trace(x = ~time.to.mat, y = ~strike, color = ~type,
@@ -280,6 +383,6 @@ PlotTradesAndCurve <- function(priced.portfolio, curve, date) {
                   strike = Strike, dplyr::everything()) |> 
     dplyr::select(-currency) |> 
     dplyr::bind_rows(data)
-
+  
   return(list(data = data, plot = plot))
 }
